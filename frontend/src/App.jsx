@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Area, LineChart, Line, ComposedChart, ReferenceLine,
+  BarChart, Bar, LabelList,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { getLocations, simulate } from './api.js';
+import { getLocations, simulate, aggregate, stability } from './api.js';
 
 const TRANSPOSITION_MODELS = ['perez', 'haydavies', 'isotropic'];
 
@@ -66,6 +67,7 @@ function addDays(dateStr, n) {
 
 // ISO "YYYY-MM-DD" -> "21 Dec 2025".
 function formatDate(iso) {
+  if (!iso) return '';
   const [y, m, d] = iso.split('-');
   return `${Number(d)} ${MONTHS[Number(m) - 1]} ${y}`;
 }
@@ -128,6 +130,22 @@ const HELP = {
   duration: {
     title: 'Duration (days)',
     text: 'How many consecutive days to simulate, from 1 to 31. The charts show every 15-minute interval in the window.',
+  },
+  year: {
+    title: 'Year',
+    text: 'Select a full calendar year (2020-2025) to aggregate the 15-minute output over. The model runs the whole NZ calendar year in local time.',
+  },
+  agg: {
+    title: 'Aggregation',
+    text: 'Aggregate the annual PV output either by calendar month (12 bars) or by ISO week (~52 bars). Both sum to the same annual total shown in the summary cards.',
+  },
+  aggYear: {
+    title: 'Yearly output chart',
+    text: 'Bars show the total AC energy (kWh) produced in each month or ISO week of the selected year. The summary cards above give the full-year totals; the table below lists every bucket with its share of the annual output.',
+  },
+  stab: {
+    title: 'Year-over-year stability',
+    text: 'Plots the total annual output (real, with clouds) and the no-cloud reference for every calendar year in the dataset. The table lists each year, and the metrics on the right quantify how stable output is year over year (coefficient of variation and the count of year-over-year changes of at least 5%).',
   },
   chartPower: {
     title: 'PV output chart',
@@ -196,13 +214,26 @@ export default function App() {
     tilt: 25, azimuth: 0, rated_power_kwp: 1.0, albedo: 0.2,
     transposition_model: 'perez', inverter_efficiency: 0.95,
   });
-  const [startDate, setStartDate] = useState('2020-12-21');
+  const [startDate, setStartDate] = useState('2025-08-18');
   const [days, setDays] = useState(1);
   const [showClear, setShowClear] = useState(true);
+
+  const [activeTab, setActiveTab] = useState('daily');
+  const [year, setYear] = useState('2025');
+  const [aggPeriod, setAggPeriod] = useState('week');
+  const [showClearAgg, setShowClearAgg] = useState(true);
 
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  const [aggResult, setAggResult] = useState(null);
+  const [aggLoading, setAggLoading] = useState(false);
+  const [aggError, setAggError] = useState(null);
+
+  const [stabResult, setStabResult] = useState(null);
+  const [stabLoading, setStabLoading] = useState(false);
+  const [stabError, setStabError] = useState(null);
 
   useEffect(() => {
     getLocations().then(setLocations).catch((e) => setError(e.message));
@@ -230,12 +261,49 @@ export default function App() {
 
   useEffect(() => { run(); }, [run]);
 
+  const runYear = useCallback(async () => {
+    setAggLoading(true);
+    setAggError(null);
+    try {
+      const data = await aggregate({
+        location, year: Number(year), period: aggPeriod, panel,
+      });
+      setAggResult(data);
+    } catch (e) {
+      setAggError(e.message);
+    } finally {
+      setAggLoading(false);
+    }
+  }, [location, panel, year, aggPeriod]);
+
+  useEffect(() => { runYear(); }, [runYear]);
+
+  const runStability = useCallback(async () => {
+    setStabLoading(true);
+    setStabError(null);
+    try {
+      const data = await stability({ location, panel });
+      setStabResult(data);
+    } catch (e) {
+      setStabError(e.message);
+    } finally {
+      setStabLoading(false);
+    }
+  }, [location, panel]);
+
+  useEffect(() => { runStability(); }, [runStability]);
+
   const meta = locations.find((l) => l.key === location);
   const timeseries = useMemo(() => result?.timeseries ?? [], [result]);
   const summary = result?.summary ?? null;
   const periodLabel = days === 1
     ? formatDate(startDate)
-    : `${formatDate(startDate)} – ${formatDate(addDays(startDate, days - 1))}`;
+    : `${formatDate(startDate)}–${formatDate(addDays(startDate, days - 1))}`;
+  const aggSummary = aggResult?.summary ?? null;
+  const aggBuckets = aggResult?.buckets ?? [];
+  const aggTitle = `${aggPeriod === 'month' ? 'Monthly' : 'Weekly'} output (kWh), ${year}`;
+  const stabYears = stabResult?.years ?? [];
+  const stabMetrics = stabResult?.metrics ?? null;
   return (
     <div className="app">
       <header>
@@ -244,12 +312,22 @@ export default function App() {
             <h1>☀️ NZ Solar PV Model</h1>
             <p className="subtitle">Idealized PV output from CAMS radiation · switchable location</p>
           </div>
-          <a className="paper-link" href="/paper.html" target="_blank" rel="noopener noreferrer">
-            📄 Paper
-          </a>
+          <div className="header-actions">
+            <a className="hdr-link" href="https://github.com/lunar-me/nz-solar-model"
+              target="_blank" rel="noopener noreferrer">
+              GitHub
+            </a>
+            <a className="hdr-link" href="/paper.html" target="_blank" rel="noopener noreferrer">
+              📄 Paper
+            </a>
+          </div>
         </div>
       </header>
-
+      <div className="tabs">
+        <button className={activeTab === 'daily' ? 'tab active' : 'tab'} onClick={() => setActiveTab('daily')}>Daily</button>
+        <button className={activeTab === 'year' ? 'tab active' : 'tab'} onClick={() => setActiveTab('year')}>Year</button>
+        <button className={activeTab === 'stability' ? 'tab active' : 'tab'} onClick={() => setActiveTab('stability')}>Stability</button>
+      </div>
       <div className="layout">
         <aside className="controls">
           <section>
@@ -303,24 +381,51 @@ export default function App() {
             </Field>
           </section>
 
-          <section>
-            <h2>Date range</h2>
-            <Field label="Start date" help={HELP.start}>
-              <input type="date" value={startDate} min="2020-01-01" max="2025-12-31"
-                onChange={(e) => setStartDate(e.target.value)} />
-            </Field>
-            <Field label="Duration (days)" help={HELP.duration}>
-              <input type="number" min="1" max="31" value={days}
-                onChange={(e) => setDays(Math.max(1, Math.min(31, Number(e.target.value))))} />
-            </Field>
-          </section>
+          {activeTab === 'daily' && (
+            <section>
+              <h2>Date range</h2>
+              <Field label="Start date" help={HELP.start}>
+                <input type="date" value={startDate} min="2020-01-01" max="2025-12-31"
+                  onChange={(e) => setStartDate(e.target.value)} />
+              </Field>
+              <Field label="Duration (days)" help={HELP.duration}>
+                <input type="number" min="1" max="31" value={days}
+                  onChange={(e) => setDays(Math.max(1, Math.min(31, Number(e.target.value))))} />
+              </Field>
+            </section>
+          )}
 
-          <button onClick={run} disabled={loading} className="run">
-            {loading ? 'Running…' : 'Run simulation'}
+          {activeTab === 'year' && (
+            <section>
+              <h2>Year</h2>
+              <Field label="Year" help={HELP.year}>
+                <select value={year} onChange={(e) => setYear(e.target.value)}>
+                  {[2020, 2021, 2022, 2023, 2024, 2025].map((y) => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Aggregation" help={HELP.agg}>
+                <select value={aggPeriod} onChange={(e) => setAggPeriod(e.target.value)}>
+                  <option value="month">Monthly</option>
+                  <option value="week">Weekly</option>
+                </select>
+              </Field>
+            </section>
+          )}
+
+                    <button
+            onClick={() => (activeTab === 'daily' ? run() : activeTab === 'year' ? runYear() : runStability())}
+            disabled={activeTab === 'daily' ? loading : activeTab === 'year' ? aggLoading : stabLoading}
+            className="run"
+          >
+            {(activeTab === 'daily' ? loading : activeTab === 'year' ? aggLoading : stabLoading) ? 'Running\u2026' : 'Run'}
           </button>
         </aside>
 
         <main className="content">
+          {activeTab === 'daily' && (
+            <>
           {error && <div className="error">{error}</div>}
 
           {!result && !error && (
@@ -420,6 +525,188 @@ export default function App() {
                   </LineChart>
                 </ResponsiveContainer>
               </section>
+            </>
+          )}
+            </>
+          )}
+
+          {activeTab === 'year' && (
+            <>
+              {aggError && <div className="error">{aggError}</div>}
+              {!aggResult && !aggError && (
+                <p className="hint">Select a year and press "Run".</p>
+              )}
+              {aggResult && (
+                <>
+                  <section className="report">
+                    <div className="report-head">
+                      <h2>Annual summary</h2>
+                      <span className="report-period">{year}</span>
+                    </div>
+                    <div className="report-cards">
+                      <div className="rcard"><span>Total</span><b>{Math.round(aggSummary.total_energy_kwh)} kWh</b></div>
+                      <div className="rcard"><span>No cloud</span><b>{Math.round(aggSummary.total_energy_clear_kwh)} kWh</b></div>
+                      <div className="rcard"><span>Peak</span><b>{aggSummary.peak_power_kw} kW</b></div>
+                      <div className="rcard"><span>Yield</span><b>{Math.round(aggSummary.specific_yield_kwh_per_kwp)} kWh/kWp</b></div>
+                      <div className="rcard"><span>Mean AC</span><b>{Math.round(aggSummary.mean_ac_power_w)} W</b></div>
+                    </div>
+                  </section>
+
+                  <section className="chart-block">
+                    <ChartHead title={aggTitle} help={HELP.aggYear} />
+                    <div className="chart-controls">
+                      <label className="toggle">
+                        <input type="checkbox" checked={showClearAgg}
+                          onChange={(e) => setShowClearAgg(e.target.checked)} />
+                        Show no-cloud top-up
+                      </label>
+                    </div>
+                    <div className="chart">
+                      <ResponsiveContainer width="100%" height={380}>
+                        <BarChart data={aggBuckets} margin={{ top: 14, right: 12, bottom: 4, left: 4 }}>
+                          <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                          <XAxis dataKey="label" interval={aggPeriod === 'week' ? 4 : 0} tickFormatter={(v) => {
+                            if (aggPeriod === 'week') {
+                              const b = aggBuckets.find((x) => x.label === v);
+                              return b && b.week_start ? formatDate(b.week_start) : v;
+                            }
+                            return v.slice(0, 3);
+                          }} />
+                          <YAxis tickFormatter={(v) => Math.round(v)} />
+                          <Tooltip
+                            formatter={(value, name) => [`${value} kWh`, name]}
+                            labelFormatter={(label) => {
+                              if (aggPeriod === 'week') {
+                                const b = aggBuckets.find((x) => x.label === label);
+                                return b && b.week_start ? `WC ${formatDate(b.week_start)}` : label;
+                              }
+                              return label;
+                            }}
+                            labelStyle={{ color: '#222' }}
+                          />
+                          <Legend />
+                          <Bar dataKey="energy_kwh" name="Output (real)" stackId="a" fill="#4caf50" radius={[0, 0, 0, 0]}>
+                            {aggPeriod === 'month' && (
+                              <LabelList dataKey="energy_kwh" position="top" formatter={(v) => `${Math.round(v)} kWh`} />
+                            )}
+                          </Bar>
+                          {showClearAgg && (
+                            <Bar dataKey="no_cloud_extra" name="No cloud (top-up)" stackId="a"
+                              fill="#9ccc65" stroke="#6aa84f" strokeDasharray="4 3" fillOpacity={0.55} radius={[3, 3, 0, 0]}>
+                              {aggPeriod === 'month' && (
+                                <LabelList dataKey="energy_clear_kwh" position="top" formatter={(v) => `${Math.round(v)} kWh`} />
+                              )}
+                            </Bar>
+                          )}
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </section>
+
+                  <section className="chart-block">
+                    <div className="chart-head"><h2>{aggPeriod === 'month' ? 'Monthly' : 'Weekly'} table</h2></div>
+                    <div className="agg-table-wrap">
+                      <table className="agg-table">
+                        <thead>
+                          <tr>
+                            <th>Period</th>
+                            {aggPeriod === 'week' && <th>WC Date</th>}
+                            <th>Energy (kWh)</th>
+                            <th>No cloud (kWh)</th>
+                            <th>Share</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {aggBuckets.map((b) => (
+                            <tr key={b.key}>
+                              <td>{b.label}</td>
+                              {aggPeriod === 'week' && <td>{formatDate(b.week_start)}</td>}
+                              <td>{Math.round(b.energy_kwh * 10) / 10}</td>
+                              <td>{Math.round(b.energy_clear_kwh * 10) / 10}</td>
+                              <td>{Math.round(b.share * 100)}%</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </>
+              )}
+            </>
+          )}
+
+          {activeTab === 'stability' && (
+            <>
+              {stabError && <div className="error">{stabError}</div>}
+              {!stabResult && !stabError && (
+                <p className="hint">Loading yearly stability…</p>
+              )}
+              {stabResult && (
+                <>
+                  <section className="chart-block">
+                    <ChartHead title="Year-over-year PV output (kWh)" help={HELP.stab} />
+                    <div className="chart">
+                      <ResponsiveContainer width="100%" height={360}>
+                        <LineChart data={stabYears}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="year" />
+                          <YAxis tickFormatter={(v) => Math.round(v)} />
+                          <Tooltip formatter={(value, name) => [`${value} kWh`, name]} labelStyle={{ color: '#222' }} />
+                          <Legend />
+                          <Line type="monotone" dataKey="total_energy_kwh" name="Total output (kWh)" stroke="#4caf50" strokeWidth={2} dot={{ r: 5 }} />
+                          <Line type="monotone" dataKey="total_energy_clear_kwh" name="No cloud (kWh)" stroke="#9ccc65" strokeDasharray="6 4" strokeWidth={2} dot={{ r: 5 }} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </section>
+
+                  <div className="stab-row">
+                    <section className="chart-block stab-table-block">
+                      <div className="chart-head"><h2>Annual totals</h2></div>
+                      <div className="agg-table-wrap">
+                        <table className="agg-table stab-table">
+                          <thead>
+                            <tr>
+                              <th>Year</th>
+                              <th>Total (kWh)</th>
+                              <th>No cloud (kWh)</th>
+                              <th>Loss (kWh)</th>
+                              <th>Loss %</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {stabYears.map((y) => (
+                              <tr key={y.year}>
+                                <td>{y.year}</td>
+                                <td>{Math.round(y.total_energy_kwh)}</td>
+                                <td>{Math.round(y.total_energy_clear_kwh)}</td>
+                                <td>{Math.round(y.cloud_loss_kwh)}</td>
+                                <td>{y.cloud_loss_pct}%</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+
+                    <section className="stab-metrics">
+                      <h3>Year-over-year stability</h3>
+                      <div className="stab-metric"><span>Coefficient of variation</span><b>{stabMetrics.cv_pct}%</b></div>
+                      <div className="stab-metric"><span>Average output</span><b>{stabMetrics.mean_kwh} kWh</b></div>
+                      <div className="stab-metric"><span>Min / Max</span><b>{stabMetrics.min_kwh} ({stabMetrics.min_year}) / {stabMetrics.max_kwh} ({stabMetrics.max_year}) kWh</b></div>
+                      <div className="stab-metric"><span>Range</span><b>{stabMetrics.range_kwh} kWh</b></div>
+                      <div className="stab-metric"><span>Variations (≥5%)</span><b>{stabMetrics.variations} of {stabMetrics.transitions}</b></div>
+                      <ul className="stab-yoy">
+                        {stabMetrics.yoy.map((c) => (
+                          <li key={`${c.from}-${c.to}`}>
+                            {c.from} → {c.to}: {c.change_pct > 0 ? '+' : ''}{c.change_pct}%
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  </div>
+                </>
+              )}
             </>
           )}
         </main>

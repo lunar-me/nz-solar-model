@@ -26,6 +26,22 @@ export function simulate(payload) {
   }).then(json);
 }
 
+export function aggregate(payload) {
+  return fetch(`${BASE}/aggregate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(json);
+}
+
+export function stability(payload) {
+  return fetch(`${BASE}/stability`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(json);
+}
+
 export function getRadiation(location, start, end) {
   const p = new URLSearchParams();
   if (start) p.set('start', start);

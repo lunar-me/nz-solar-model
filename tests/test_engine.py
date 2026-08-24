@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
@@ -123,4 +124,31 @@ def test_clear_sky_power_column(auckland):
     assert "ac_power_clear" in result.columns
     assert (result["ac_power"] <= result["ac_power_clear"] + 1e-6).all()
     assert result["ac_power_clear"].sum() >= result["ac_power"].sum() - 1e-3
+
+
+
+def test_aggregate_month_and_week(auckland):
+    """Monthly and weekly buckets cover the NZ year and sum to the annual total."""
+    from app.engine import aggregate_energy
+    meta = auckland.attrs["metadata"]
+    # NZ-local calendar year (like the API): Jan 1 00:00 -> Jan 1 next year, exclusive.
+    start = pd.Timestamp("2020-01-01", tz="Pacific/Auckland")
+    end = pd.Timestamp("2021-01-01", tz="Pacific/Auckland")
+    year = auckland.loc[start.tz_convert("UTC"):end.tz_convert("UTC")]
+    year = year[year.index < end.tz_convert("UTC")]
+    result = run_simulation(year, PanelConfig(), meta["latitude"],
+                            meta["longitude"], meta["altitude"])
+    annual_kwh = result["energy_wh"].sum() / 1000.0
+
+    months = aggregate_energy(result, "month")
+    weeks = aggregate_energy(result, "week")
+    assert len(months) == 12
+    assert len(weeks) == 52
+    assert abs(sum(m["energy_kwh"] for m in months) - annual_kwh) < 0.01
+    # Week 53 is ignored, so the weekly sum never exceeds the annual total.
+    assert sum(w["energy_kwh"] for w in weeks) <= annual_kwh + 0.01
+    # clear-sky energy and weekly week-starting dates are present
+    assert all(m["energy_clear_kwh"] >= m["energy_kwh"] for m in months)
+    assert all(m["no_cloud_extra"] >= 0 for m in months)
+    assert all(w["week_start"] for w in weeks)
 

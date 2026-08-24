@@ -22,3 +22,18 @@ class SimulateRequest(BaseModel):
     end: str | None = Field(None, description="End ISO timestamp (UTC, exclusive). Default = end of data.")
     panel: PanelConfigIn = Field(default_factory=PanelConfigIn)
     include_radiation: bool = Field(True, description="Echo GHI/DHI/DNI in the timeseries")
+
+
+class AggregateRequest(BaseModel):
+    """Annual aggregation over a full calendar year (monthly or weekly buckets)."""
+    location: str = Field(..., description="Location key, e.g. 'auckland'")
+    year: int = Field(..., ge=2020, le=2025, description="Calendar year to aggregate")
+    period: Literal["month", "week"] = "month"
+    panel: PanelConfigIn = Field(default_factory=PanelConfigIn)
+
+
+class StabilityRequest(BaseModel):
+    """Year-over-year stability: totals for every year in the dataset."""
+    location: str = Field(..., description="Location key, e.g. 'auckland'")
+    panel: PanelConfigIn = Field(default_factory=PanelConfigIn)
+

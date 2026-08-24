@@ -170,3 +170,62 @@ def summarize(result: pd.DataFrame, rated_kwp: float) -> dict:
         "period_hours": round(float(dt * n), 3),
         "mean_ac_power_w": round(float(result["ac_power"].mean()), 3),
     }
+
+
+def aggregate_energy(result: pd.DataFrame, period: str) -> list[dict]:
+    """Aggregate the 15-min AC energy into 'month' or 'week' buckets.
+
+    Periods are taken in NZ-local time so the buckets align with calendar
+    months / ISO weeks as seen in New Zealand. Each bucket reports the real
+    energy, the clear-sky (no-cloud) energy, the difference (no_cloud_extra),
+    and the share of the annual total. Weekly buckets also carry the Monday
+    (week-starting) date as an ISO string.
+    """
+    from datetime import date as _date
+
+    local = result.index.tz_convert("Pacific/Auckland")
+    real = result["energy_wh"].to_numpy()
+    clear = result["energy_clear_wh"].to_numpy()
+
+    if period == "month":
+        per = local.to_period("M")
+        sr = pd.Series(real, index=per).groupby(level=0).sum()
+        sc = pd.Series(clear, index=per).groupby(level=0).sum()
+        keys = [str(p) for p in sr.index]
+        labels = [f"{p.strftime('%b %Y')}" for p in sr.index]
+        week_start = [None] * len(sr)
+    elif period == "week":
+        cal = local.isocalendar()
+        df = pd.DataFrame({"y": cal.year.to_numpy(), "w": cal.week.to_numpy(),
+                           "re": real, "ce": clear})
+        g = df.groupby(["y", "w"], sort=True)[["re", "ce"]].sum()
+        sr, sc = g["re"], g["ce"]
+        keys = [f"{y}-W{w:02d}" for y, w in g.index]
+        labels = [f"{y} W{w:02d}" for y, w in g.index]
+        week_start = [_date.fromisocalendar(y, w, 1).isoformat() for y, w in g.index]
+    else:
+        raise ValueError(f"period must be 'month' or 'week', got {period!r}")
+
+    total = float(sr.sum())
+    out = []
+    for i, key in enumerate(keys):
+        re_wh = float(sr.values[i])
+        ce_wh = float(sc.values[i])
+        out.append({
+            "key": key,
+            "label": labels[i],
+            "energy_kwh": round(re_wh / 1000.0, 3),
+            "energy_clear_kwh": round(ce_wh / 1000.0, 3),
+            "no_cloud_extra": round(max(ce_wh - re_wh, 0.0) / 1000.0, 3),
+            "share": round(re_wh / total, 4) if total else 0.0,
+            "week_start": week_start[i],
+        })
+
+    # Always show 52 weekly bars: if the ISO year has 53 weeks (e.g. 2020, 2025),
+    # simply ignore the 53rd week rather than merging it.
+    if period == "week" and len(out) == 53:
+        out = out[:-1]
+
+    return out
+
+
