@@ -1,0 +1,7 @@
+# FastAPI + pvlib backend
+fastapi>=0.141
+uvicorn[standard]>=0.30
+pvlib>=0.15
+pandas>=2.0
+numpy>=1.24
+pydantic>=2.5

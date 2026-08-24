@@ -1,0 +1,430 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Area, LineChart, Line, ComposedChart, ReferenceLine,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer,
+} from 'recharts';
+import { getLocations, simulate } from './api.js';
+
+const TRANSPOSITION_MODELS = ['perez', 'haydavies', 'isotropic'];
+
+// The backend ships `timestamp_local` as NZ (Pacific/Auckland) wall time
+// "YYYY-MM-DD HH:MM", so these formatters just slice/prettify it — no
+// client-side timezone conversion needed (and none that could silently drift).
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function formatTick(v) {          // axis tick -> "21 Dec 2020, 13:00"
+  if (!v) return v;
+  const [date, time] = v.split(' ');
+  const [y, m, d] = date.split('-');
+  return `${Number(d)} ${MONTHS[Number(m) - 1]} ${y}, ${time}`;
+}
+
+function formatLocalFull(v) {     // tooltip -> "21 Dec 2020, 13:00"
+  if (!v) return '';
+  const [date, time] = v.split(' ');
+  const [y, m, d] = date.split('-');
+  return `${Number(d)} ${MONTHS[Number(m) - 1]} ${y}, ${time}`;
+}
+
+const NZ_TZ = 'Pacific/Auckland';
+
+// UTC offset (ms) of the NZ timezone at a given instant, via Intl.
+function zonedOffsetMs(ms) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: NZ_TZ, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const p = {};
+  for (const part of dtf.formatToParts(new Date(ms))) p[part.type] = part.value;
+  const wallAsUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return wallAsUtc - ms;
+}
+
+// NZ local midnight of an ISO date, converted to UTC (handles NZST/NZDT).
+function nzMidnightToUtc(dateStr) {
+  const off = zonedOffsetMs(Date.parse(`${dateStr}T12:00:00Z`));
+  return new Date(Date.parse(`${dateStr}T00:00:00Z`) - off).toISOString();
+}
+
+// Decimal degrees -> "S 36° 44′" with hemisphere letter.
+function toDMS(coord, posLetter, negLetter) {
+  const neg = coord < 0;
+  const abs = Math.abs(coord);
+  const deg = Math.floor(abs);
+  const minutes = Math.round((abs - deg) * 60);
+  return `${neg ? negLetter : posLetter} ${deg}° ${minutes}′`;
+}
+
+// add n whole days to an ISO "YYYY-MM-DD", returning an ISO "YYYY-MM-DD".
+function addDays(dateStr, n) {
+  return new Date(Date.parse(`${dateStr}T00:00:00Z`) + n * 86400000)
+    .toISOString().slice(0, 10);
+}
+
+// ISO "YYYY-MM-DD" -> "21 Dec 2025".
+function formatDate(iso) {
+  const [y, m, d] = iso.split('-');
+  return `${Number(d)} ${MONTHS[Number(m) - 1]} ${y}`;
+}
+
+function Compass({ tilt, azimuth }) {
+  const rad = ((azimuth - 90) * Math.PI) / 180; // screen: 0=N up, rotate CW
+  const x = 50 + 26 * Math.cos(rad);
+  const y = 50 + 26 * Math.sin(rad);
+  return (
+    <svg viewBox="0 0 100 100" width="120" height="120" className="compass">
+      <circle cx="50" cy="50" r="46" fill="none" stroke="#334" strokeWidth="2" />
+      {['N', 'E', 'S', 'W'].map((d, i) => {
+        const a = (i * 90 - 90) * (Math.PI / 180);
+        const lx = 50 + 40 * Math.cos(a);
+        const ly = 50 + 40 * Math.sin(a);
+        return (
+          <text key={d} x={lx} y={ly} textAnchor="middle" dominantBaseline="central"
+            className="compass-label">{d}</text>
+        );
+      })}
+      <line x1="50" y1="50" x2={x} y2={y} stroke="#e2431e" strokeWidth="3" />
+      <circle cx="50" cy="50" r="3" fill="#e2431e" />
+    </svg>
+  );
+}
+
+const HELP = {
+  city: {
+    title: 'Location',
+    text: 'Choose which city to model. Each location uses its own CAMS solar-radiation dataset and its own latitude/longitude/altitude (read from the file header). The two options are Auckland and Christchurch.',
+  },
+  tilt: {
+    title: 'Panel tilt',
+    text: 'Angle of the panel from horizontal, in degrees. 0° = flat on the ground, 90° = vertical. For a fixed NZ roof a tilt of ~25–35° is typical.',
+  },
+  azimuth: {
+    title: 'Panel azimuth',
+    text: 'Horizontal direction the panel faces, measured clockwise from north. 0° = north, 90° = east, 180° = south, 270° = west. In the southern hemisphere, north-facing panels (azimuth ≈ 0°) usually capture the most energy.',
+  },
+  power: {
+    title: 'Rated power (kWp)',
+    text: 'The system’s STC rated DC power in kilowatt-peak (typical home systems are 3–10 kWp). The model produces 1 kW per 1000 W/m² of plane-of-array irradiance, clipped at this rating.',
+  },
+  albedo: {
+    title: 'Albedo',
+    text: 'Ground reflectance, from 0 to 1. It scales how much sunlight the panel receives reflected off the ground. Common values: ~0.2 for grass/soil, 0.8+ for snow.',
+  },
+  model: {
+    title: 'Transposition model',
+    text: 'Which pvlib model converts horizontal irradiance (GHI/DHI/DNI) onto the tilted panel plane. Perez is the most accurate and is the default; Hay–Davies is a simpler alternative; Isotropic assumes a uniform diffuse sky.',
+  },
+  inverter: {
+    title: 'Inverter efficiency',
+    text: 'Fractional AC/DC conversion efficiency. Modern string inverters are typically 95–98% (0.95–0.98), so the default is 0.95. AC power = DC power × efficiency.',
+  },
+  start: {
+    title: 'Start date',
+    text: 'First day of the simulation window (a local NZ date, sent to the API as UTC). The dataset spans 2020-01-01 to 2025-12-31.',
+  },
+  duration: {
+    title: 'Duration (days)',
+    text: 'How many consecutive days to simulate, from 1 to 31. The charts show every 15-minute interval in the window.',
+  },
+  chartPower: {
+    title: 'PV output chart',
+    text: 'Plots inverter AC power (watts) at each 15-minute step. The curve follows sunlight through the day and drops to zero at night. The dashed green line shows what the panel would produce with no clouds (clear-sky reference) and can be toggled off. A mean line plus the period’s Total and no-cloud energy are shown on the chart.',
+  },
+  chartIrr: {
+    title: 'Irradiance chart',
+    text: 'Shows the radiation components the model uses: GHI (global horizontal), DNI (direct normal) and POA (plane-of-array — the irradiance actually hitting the tilted panel). POA is what drives power output.',
+  },
+  chartGeo: {
+    title: 'Sun geometry chart',
+    text: 'Sun elevation is the sun’s height above the horizon; angle of incidence (AOI) is the angle between the sun’s rays and the panel’s perpendicular. A lower AOI (sun closer to straight-on) gives more direct power.',
+  },
+};
+
+function Help({ title, text }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="help-wrap">
+      <span
+        className="help"
+        role="button"
+        tabIndex={0}
+        aria-label={`Help: ${title}`}
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen((o) => !o); }
+        }}
+      >?</span>
+      {open && (
+        <div className="help-popup" onClick={(e) => e.stopPropagation()}>
+          <button className="help-close" onClick={() => setOpen(false)} aria-label="Close">✕</button>
+          <h4>{title}</h4>
+          <p>{text}</p>
+        </div>
+      )}
+    </span>
+  );
+}
+
+function Field({ label, help, children }) {
+  return (
+    <div className="field">
+      <span className="field-label">
+        {label}
+        {help && <Help title={help.title} text={help.text} />}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function ChartHead({ title, help }) {
+  return (
+    <div className="chart-head">
+      <h2>{title}</h2>
+      <Help title={help.title} text={help.text} />
+    </div>
+  );
+}
+
+export default function App() {
+  const [locations, setLocations] = useState([]);
+  const [location, setLocation] = useState('auckland');
+  const [panel, setPanel] = useState({
+    tilt: 25, azimuth: 0, rated_power_kwp: 1.0, albedo: 0.2,
+    transposition_model: 'perez', inverter_efficiency: 0.95,
+  });
+  const [startDate, setStartDate] = useState('2020-12-21');
+  const [days, setDays] = useState(1);
+  const [showClear, setShowClear] = useState(true);
+
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    getLocations().then(setLocations).catch((e) => setError(e.message));
+  }, []);
+
+  const set = (key) => (e) => {
+    const v = e.target.value;
+    setPanel((p) => ({ ...p, [key]: e.target.type === 'number' ? Number(v) : v }));
+  };
+
+  const run = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    const start = nzMidnightToUtc(startDate); // NZ-local 00:00 of the picked date
+    const end = new Date(Date.parse(start) + days * 86400000).toISOString();
+    try {
+      const data = await simulate({ location, start, end, panel });
+      setResult(data);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [location, panel, startDate, days]);
+
+  useEffect(() => { run(); }, [run]);
+
+  const meta = locations.find((l) => l.key === location);
+  const timeseries = useMemo(() => result?.timeseries ?? [], [result]);
+  const summary = result?.summary ?? null;
+  const periodLabel = days === 1
+    ? formatDate(startDate)
+    : `${formatDate(startDate)} – ${formatDate(addDays(startDate, days - 1))}`;
+  return (
+    <div className="app">
+      <header>
+        <div className="header-inner">
+          <div>
+            <h1>☀️ NZ Solar PV Model</h1>
+            <p className="subtitle">Idealized PV output from CAMS radiation · switchable location</p>
+          </div>
+          <a className="paper-link" href="/paper.html" target="_blank" rel="noopener noreferrer">
+            📄 Paper
+          </a>
+        </div>
+      </header>
+
+      <div className="layout">
+        <aside className="controls">
+          <section>
+            <h2>Location</h2>
+            <Field label="City" help={HELP.city}>
+              <select value={location} onChange={(e) => setLocation(e.target.value)}>
+                {locations.map((l) => (
+                  <option key={l.key} value={l.key}>{l.name}</option>
+                ))}
+              </select>
+            </Field>
+            {meta && (
+              <p className="meta">
+                {meta.name}, {meta.region} · lat {toDMS(meta.metadata.latitude, 'N', 'S')} ·
+                lon {toDMS(meta.metadata.longitude, 'E', 'W')} · alt {meta.metadata.altitude} m
+              </p>
+            )}
+          </section>
+
+          <section>
+            <h2>Panel</h2>
+            <Field label={`Tilt ${panel.tilt}°`} help={HELP.tilt}>
+              <input type="range" min="0" max="90" value={panel.tilt}
+                onChange={set('tilt')} />
+            </Field>
+            <Field label={`Azimuth ${panel.azimuth}° (0=N 90=E 180=S 270=W)`} help={HELP.azimuth}>
+              <input type="range" min="0" max="360" value={panel.azimuth}
+                onChange={set('azimuth')} />
+            </Field>
+            <div className="compass-wrap">
+              <Compass tilt={panel.tilt} azimuth={panel.azimuth} />
+            </div>
+            <Field label="Rated power (kWp)" help={HELP.power}>
+              <input type="number" min="0.1" step="0.1" value={panel.rated_power_kwp}
+                onChange={set('rated_power_kwp')} />
+            </Field>
+            <Field label="Albedo" help={HELP.albedo}>
+              <input type="number" min="0" max="1" step="0.05" value={panel.albedo}
+                onChange={set('albedo')} />
+            </Field>
+            <Field label="Transposition model" help={HELP.model}>
+              <select value={panel.transposition_model} onChange={set('transposition_model')}>
+                {TRANSPOSITION_MODELS.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Inverter efficiency" help={HELP.inverter}>
+              <input type="number" min="0.5" max="1" step="0.01"
+                value={panel.inverter_efficiency} onChange={set('inverter_efficiency')} />
+            </Field>
+          </section>
+
+          <section>
+            <h2>Date range</h2>
+            <Field label="Start date" help={HELP.start}>
+              <input type="date" value={startDate} min="2020-01-01" max="2025-12-31"
+                onChange={(e) => setStartDate(e.target.value)} />
+            </Field>
+            <Field label="Duration (days)" help={HELP.duration}>
+              <input type="number" min="1" max="31" value={days}
+                onChange={(e) => setDays(Math.max(1, Math.min(31, Number(e.target.value))))} />
+            </Field>
+          </section>
+
+          <button onClick={run} disabled={loading} className="run">
+            {loading ? 'Running…' : 'Run simulation'}
+          </button>
+        </aside>
+
+        <main className="content">
+          {error && <div className="error">{error}</div>}
+
+          {!result && !error && (
+            <p className="hint">Choose a location and press “Run simulation”.</p>
+          )}
+
+          {result && (
+            <>
+              <section className="report">
+                <div className="report-head">
+                  <h2>Energy summary</h2>
+                  <span className="report-period">
+                    {periodLabel}{days > 1 ? ` · ${days} days` : ''}
+                  </span>
+                </div>
+                <div className="report-cards">
+                  <div className="rcard"><span>Total</span><b>{summary.total_energy_kwh} kWh</b></div>
+                  <div className="rcard"><span>No cloud</span><b>{summary.total_energy_clear_kwh} kWh</b></div>
+                  <div className="rcard"><span>Peak</span><b>{summary.peak_power_kw} kW</b></div>
+                  <div className="rcard"><span>Yield</span><b>{summary.specific_yield_kwh_per_kwp} kWh/kWp</b></div>
+                  <div className="rcard"><span>Mean AC</span><b>{Math.round(summary.mean_ac_power_w)} W</b></div>
+                </div>
+              </section>
+
+              <section className="chart-block">
+                <ChartHead title="PV output (AC power, W)" help={HELP.chartPower} />
+                <div className="chart-controls">
+                  <label className="toggle">
+                    <input type="checkbox" checked={showClear}
+                      onChange={(e) => setShowClear(e.target.checked)} />
+                    Show no-cloud line
+                  </label>
+                </div>
+                <div className="chart">
+                  <ResponsiveContainer width="100%" height={480}>
+                    <ComposedChart data={timeseries}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="timestamp_local" tickFormatter={formatTick} minTickGap={40} />
+                      <YAxis tickFormatter={(v) => Math.round(v)} />
+                      <Tooltip
+                        labelFormatter={formatLocalFull}
+                        formatter={(value, name) => [Math.round(Number(value)), name]}
+                      />
+                      <Legend />
+                      <Area type="monotone" dataKey="ac_power" name="AC power (W, real clouds)"
+                            fill="#4caf50" fillOpacity={0.25} stroke="#2e7d32" />
+                      {showClear && (
+                        <Line type="monotone" dataKey="ac_power_clear" name="AC power (W, clear sky)"
+                          stroke="#9ccc65" strokeDasharray="6 4" dot={false} strokeWidth={1.5} />
+                      )}
+                      <ReferenceLine
+                        y={summary.mean_ac_power_w}
+                        stroke="#ffb020"
+                        label={{
+                          value: `mean ${Math.round(summary.mean_ac_power_w)} W`,
+                          position: 'insideTopRight', fill: '#ffb020', fontSize: 12,
+                        }}
+                      />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                  <div className="chart-badges">
+                    <div className="chart-badge">Total: {summary.total_energy_kwh} kWh</div>
+                    <div className="chart-badge chart-badge-clear">
+                      No cloud: {summary.total_energy_clear_kwh} kWh
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="chart-block">
+                <ChartHead title="Irradiance (W/m²)" help={HELP.chartIrr} />
+                <ResponsiveContainer width="100%" height={320}>
+                  <LineChart data={timeseries}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="timestamp_local" tickFormatter={formatTick} minTickGap={40} />
+                    <YAxis />
+                    <Tooltip labelFormatter={formatLocalFull} />
+                    <Legend />
+                    <Line type="monotone" dataKey="ghi" name="GHI (global horizontal)" stroke="#1e88e5" dot={false} />
+                    <Line type="monotone" dataKey="dni" name="DNI (direct normal)" stroke="#f4511e" dot={false} />
+                    <Line type="monotone" dataKey="poa_global" name="POA (plane-of-array)" stroke="#6a1b9a" dot={false} strokeWidth={2} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </section>
+
+              <section className="chart-block">
+                <ChartHead title="Sun geometry &amp; angle of incidence (°)" help={HELP.chartGeo} />
+                <ResponsiveContainer width="100%" height={260}>
+                  <LineChart data={timeseries}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="timestamp_local" tickFormatter={formatTick} minTickGap={40} />
+                    <YAxis domain={[0, 90]} />
+                    <Tooltip labelFormatter={formatLocalFull} />
+                    <Legend />
+                    <Line dataKey="sun_elevation_deg" name="Sun elevation" stroke="#43a047" dot={false} />
+                    <Line dataKey="aoi_deg" name="Angle of incidence" stroke="#fb8c00" dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </section>
+            </>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+

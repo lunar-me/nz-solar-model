@@ -1,0 +1,24 @@
+"""Pydantic request/response models for the API."""
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class PanelConfigIn(BaseModel):
+    tilt: float = Field(25.0, ge=0.0, le=90.0, description="Degrees from horizontal")
+    azimuth: float = Field(0.0, ge=0.0, le=360.0,
+                           description="Degrees from North (0=N,90=E,180=S,270=W)")
+    rated_power_kwp: float = Field(1.0, gt=0.0)
+    albedo: float = Field(0.2, ge=0.0, le=1.0)
+    transposition_model: Literal["perez", "haydavies", "isotropic"] = "perez"
+    inverter_efficiency: float = Field(0.95, gt=0.0, le=1.0)
+
+
+class SimulateRequest(BaseModel):
+    location: str = Field(..., description="Location key, e.g. 'auckland'")
+    start: str | None = Field(None, description="Start ISO timestamp (UTC). Default = start of data.")
+    end: str | None = Field(None, description="End ISO timestamp (UTC, exclusive). Default = end of data.")
+    panel: PanelConfigIn = Field(default_factory=PanelConfigIn)
+    include_radiation: bool = Field(True, description="Echo GHI/DHI/DNI in the timeseries")
