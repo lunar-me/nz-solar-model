@@ -10,7 +10,7 @@ class PanelConfigIn(BaseModel):
     tilt: float = Field(25.0, ge=0.0, le=90.0, description="Degrees from horizontal")
     azimuth: float = Field(0.0, ge=0.0, le=360.0,
                            description="Degrees from North (0=N,90=E,180=S,270=W)")
-    rated_power_kwp: float = Field(1.0, gt=0.0)
+    rated_power_kwp: float = Field(5.0, gt=0.0)
     albedo: float = Field(0.2, ge=0.0, le=1.0)
     transposition_model: Literal["perez", "haydavies", "isotropic"] = "perez"
     inverter_efficiency: float = Field(0.95, gt=0.0, le=1.0)
@@ -41,8 +41,5 @@ class StabilityRequest(BaseModel):
 class MoneyRequest(BaseModel):
     """Solar self-consumption / savings over the fixed Christchurch year."""
     location: str = Field("christchurch", description="Locked to Christchurch")
-    price_per_kwh: float | None = Field(
-        None, gt=0.0,
-        description="$/kWh used to value wasted solar; defaults to the bill's effective rate")
     panel: PanelConfigIn = Field(default_factory=PanelConfigIn)
 

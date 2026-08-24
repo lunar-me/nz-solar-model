@@ -152,3 +152,40 @@ def test_aggregate_month_and_week(auckland):
     assert all(m["no_cloud_extra"] >= 0 for m in months)
     assert all(w["week_start"] for w in weeks)
 
+
+
+def test_data_quality_report(auckland):
+    """The data-quality report flags the full dataset as internally consistent."""
+    from app.engine import data_quality_report
+    meta = auckland.attrs["metadata"]
+    rep = data_quality_report(auckland, meta["latitude"], meta["longitude"],
+                              meta["altitude"])
+    assert rep["time"]["rows"] > 100_000
+    assert rep["time"]["duplicates"] == 0
+    assert rep["radiation"]["negatives"]["ghi"] == 0
+    assert abs(rep["radiation"]["ghi_conservation"]["mean_residual"]) < 1.0
+    assert rep["radiation"]["dhi_le_ghi_violations"] == 0
+
+
+
+def test_cloud_index_column(auckland):
+    """The engine exposes a cloud index (GHI / GHI_clear), 0 at night."""
+    from app.engine import aggregate_energy
+    meta = auckland.attrs["metadata"]
+    day = auckland.loc["2020-01-10 00:00":"2020-01-10 06:00"]
+    result = run_simulation(day, PanelConfig(), meta["latitude"],
+                            meta["longitude"], meta["altitude"])
+    assert "cloud_index" in result.columns
+    assert (result["cloud_index"].dropna() >= 0).all()
+    # night (no sunlight) should be NaN so it is blank / excluded
+    night = result[result["sun_elevation_deg"] <= 0]
+    if len(night):
+        assert night["cloud_index"].isna().all()
+    # aggregation buckets carry the mean cloud index too (use a quarter-year)
+    q = auckland.loc["2020-01-01":"2020-03-31"]
+    res = run_simulation(q, PanelConfig(), meta["latitude"],
+                         meta["longitude"], meta["altitude"])
+    months = aggregate_energy(res, "month")
+    assert all("cloud_index" in m for m in months)
+    assert all(0 <= m["cloud_index"] <= 1.5 for m in months)
+

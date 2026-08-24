@@ -5,7 +5,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { getLocations, simulate, aggregate, stability, money } from './api.js';
+import { getLocations, simulate, aggregate, stability, money, dataQuality } from './api.js';
 
 const TRANSPOSITION_MODELS = ['perez', 'haydavies', 'isotropic'];
 
@@ -159,6 +159,14 @@ const HELP = {
     title: 'Monthly cost',
     text: 'The red bar is what the month\'s electricity would have cost with no solar; the green bar is the actual cost with solar. The gap between them is what you saved.',
   },
+  cloudDaily: {
+    title: 'Cloud index (daily)',
+    text: 'Kc = GHI ÷ clear-sky GHI for each daylight interval. 1.0 = fully clear sky; lower = more cloud. Night periods are left blank (NaN) because the ratio is undefined without sunlight, so the line is only drawn during the day. The dashed line at 1.0 marks a clear sky.',
+  },
+  cloudYear: {
+    title: 'Cloud index (seasonal)',
+    text: 'The mean cloud index over each month or ISO week, using the same buckets as the output chart. Only daylight intervals are averaged — night is excluded (blank), because including night zeros would drag the value down. It reveals seasonal cloudiness.',
+  },
   chartPower: {
     title: 'PV output chart',
     text: 'Plots inverter AC power (watts) at each 15-minute step. The curve follows sunlight through the day and drops to zero at night. The dashed green line shows what the panel would produce with no clouds (clear-sky reference) and can be toggled off. A mean line plus the period’s Total and no-cloud energy are shown on the chart.',
@@ -219,11 +227,32 @@ function ChartHead({ title, help }) {
   );
 }
 
+// Custom legend so the transparent "Solar wasted" bar still shows a light-green
+// swatch (recharts uses the bar fill for the legend icon, which is transparent).
+function EnergyLegend({ payload }) {
+  const colors = {
+    'Consumption': '#e2431e',
+    'Grid import': '#1e88e5',
+    'Solar used': '#4caf50',
+    'Solar wasted': '#9ccc65',
+  };
+  return (
+    <div className="chart-legend">
+      {payload.map((entry, i) => (
+        <span key={i} className="legend-item">
+          <span className="legend-swatch" style={{ background: colors[entry.value] || entry.color }} />
+          {entry.value}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [locations, setLocations] = useState([]);
   const [location, setLocation] = useState('auckland');
   const [panel, setPanel] = useState({
-    tilt: 25, azimuth: 0, rated_power_kwp: 1.0, albedo: 0.2,
+    tilt: 25, azimuth: 0, rated_power_kwp: 5.0, albedo: 0.2,
     transposition_model: 'perez', inverter_efficiency: 0.95,
   });
   const [startDate, setStartDate] = useState('2025-08-18');
@@ -250,7 +279,10 @@ export default function App() {
   const [moneyResult, setMoneyResult] = useState(null);
   const [moneyLoading, setMoneyLoading] = useState(false);
   const [moneyError, setMoneyError] = useState(null);
-  const [pricePerKwh, setPricePerKwh] = useState('');
+
+  const [dqResult, setDqResult] = useState(null);
+  const [dqLoading, setDqLoading] = useState(false);
+  const [dqError, setDqError] = useState(null);
 
   useEffect(() => {
     getLocations().then(setLocations).catch((e) => setError(e.message));
@@ -313,18 +345,32 @@ export default function App() {
   const runMoney = useCallback(async () => {
     setMoneyLoading(true);
     setMoneyError(null);
-    const ppk = pricePerKwh && Number(pricePerKwh) > 0 ? Number(pricePerKwh) : null;
     try {
-      const data = await money({ location: 'christchurch', panel, price_per_kwh: ppk });
+      const data = await money({ location: 'christchurch', panel });
       setMoneyResult(data);
     } catch (e) {
       setMoneyError(e.message);
     } finally {
       setMoneyLoading(false);
     }
-  }, [panel, pricePerKwh]);
+  }, [panel]);
 
   useEffect(() => { runMoney(); }, [runMoney]);
+
+  const runDataQuality = useCallback(async () => {
+    setDqLoading(true);
+    setDqError(null);
+    try {
+      const data = await dataQuality(location);
+      setDqResult(data);
+    } catch (e) {
+      setDqError(e.message);
+    } finally {
+      setDqLoading(false);
+    }
+  }, [location]);
+
+  useEffect(() => { runDataQuality(); }, [runDataQuality]);
 
   const meta = locations.find((l) => l.key === location);
   const timeseries = useMemo(() => result?.timeseries ?? [], [result]);
@@ -341,6 +387,7 @@ export default function App() {
   const busy = activeTab === 'daily' ? loading
     : activeTab === 'year' ? aggLoading
     : activeTab === 'stability' ? stabLoading
+    : activeTab === 'dataq' ? dqLoading
     : moneyLoading;
   const moneyMonthly = useMemo(() => (moneyResult?.monthly ?? []).map((m) => ({
     ...m,
@@ -348,6 +395,18 @@ export default function App() {
     cost_with: +(m.cost_$ - m.savings_$).toFixed(2),
     wasted_pct: m.solar_kwh > 0 ? Math.round((m.excess_kwh / m.solar_kwh) * 100) : 0,
   })), [moneyResult]);
+  const moneyTotalRow = useMemo(() => moneyMonthly.reduce((a, m) => {
+    a.consumption_kwh += m.consumption_kwh;
+    a.solar_kwh += m.solar_kwh;
+    a.self_consumed_kwh += m.self_consumed_kwh;
+    a.excess_kwh += m.excess_kwh;
+    a.grid_kwh += m.grid_kwh;
+    a.cost_$ += m.cost_$;
+    a.savings_$ += m.savings_$;
+    a.waste_$ += m.waste_$;
+    return a;
+  }, { consumption_kwh: 0, solar_kwh: 0, self_consumed_kwh: 0, excess_kwh: 0,
+       grid_kwh: 0, cost_$: 0, savings_$: 0, waste_$: 0 }), [moneyMonthly]);
   return (
     <div className="app">
       <header>
@@ -372,6 +431,7 @@ export default function App() {
         <button className={activeTab === 'year' ? 'tab active' : 'tab'} onClick={() => setActiveTab('year')}>Year</button>
         <button className={activeTab === 'stability' ? 'tab active' : 'tab'} onClick={() => setActiveTab('stability')}>Stability</button>
         <button className={activeTab === 'money' ? 'tab active' : 'tab'} onClick={() => { setLocation('christchurch'); setActiveTab('money'); }}>$ My money</button>
+        <button className={activeTab === 'dataq' ? 'tab active' : 'tab'} onClick={() => setActiveTab('dataq')}>Data quality</button>
       </div>
       <div className="layout">
         <aside className="controls">
@@ -397,6 +457,7 @@ export default function App() {
             )}
           </section>
 
+          {activeTab !== 'dataq' && (
           <section>
             <h2>Panel</h2>
             <Field label={`Tilt ${panel.tilt}°`} help={HELP.tilt}>
@@ -430,15 +491,6 @@ export default function App() {
                 value={panel.inverter_efficiency} onChange={set('inverter_efficiency')} />
             </Field>
           </section>
-
-          {activeTab === 'money' && (
-            <section>
-              <h2>Pricing</h2>
-              <Field label="Price ($/kWh, for wasted solar)" help={HELP.price}>
-                <input type="number" min="0" step="0.01" placeholder="auto"
-                  value={pricePerKwh} onChange={(e) => setPricePerKwh(e.target.value)} />
-              </Field>
-            </section>
           )}
 
           {activeTab === 'daily' && (
@@ -480,16 +532,19 @@ export default function App() {
             onClick={() => (activeTab === 'daily' ? run()
               : activeTab === 'year' ? runYear()
               : activeTab === 'stability' ? runStability()
+              : activeTab === 'dataq' ? runDataQuality()
               : runMoney())}
             disabled={activeTab === 'daily' ? loading
               : activeTab === 'year' ? aggLoading
               : activeTab === 'stability' ? stabLoading
+              : activeTab === 'dataq' ? dqLoading
               : moneyLoading}
             className="run"
           >
             {(activeTab === 'daily' ? loading
               : activeTab === 'year' ? aggLoading
               : activeTab === 'stability' ? stabLoading
+              : activeTab === 'dataq' ? dqLoading
               : moneyLoading) ? 'Running\u2026' : 'Run'}
           </button>
         </aside>
@@ -565,6 +620,24 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+              </section>
+
+              <section className="chart-block">
+                <ChartHead title="Cloud index (GHI / GHI_clear)" help={HELP.cloudDaily} />
+                <div className="chart">
+                  <ResponsiveContainer width="100%" height={260}>
+                    <LineChart data={timeseries}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="timestamp_local" tickFormatter={formatTick} minTickGap={40} />
+                      <YAxis domain={[0, 1.2]} />
+                      <Tooltip labelFormatter={formatLocalFull} formatter={(v) => [v, 'Cloud index']} labelStyle={{ color: '#222' }} />
+                      <ReferenceLine y={1} stroke="#ffb020" strokeDasharray="4 3"
+                        label={{ value: 'clear', position: 'insideTopRight', fill: '#ffb020', fontSize: 11 }} />
+                      <Line type="monotone" dataKey="cloud_index" stroke="#1e88e5" dot={false} strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <p className="cloud-note">Cloud index = GHI ÷ clear-sky GHI. 1.0 = fully clear; lower = more cloud.</p>
               </section>
 
               <section className="chart-block">
@@ -658,7 +731,7 @@ export default function App() {
                             labelStyle={{ color: '#222' }}
                           />
                           <Legend />
-                          <Bar dataKey="energy_kwh" name="Output (real)" stackId="a" fill="#4caf50" radius={[0, 0, 0, 0]}>
+                          <Bar dataKey="energy_kwh" name="Output (real clouds)" stackId="a" fill="#4caf50" radius={[0, 0, 0, 0]}>
                             {aggPeriod === 'month' && (
                               <LabelList dataKey="energy_kwh" position="top" formatter={(v) => `${Math.round(v)} kWh`} />
                             )}
@@ -676,33 +749,62 @@ export default function App() {
                     </div>
                   </section>
 
-                  <section className="chart-block">
-                    <div className="chart-head"><h2>{aggPeriod === 'month' ? 'Monthly' : 'Weekly'} table</h2></div>
-                    <div className="agg-table-wrap">
-                      <table className="agg-table">
-                        <thead>
-                          <tr>
-                            <th>Period</th>
-                            {aggPeriod === 'week' && <th>WC Date</th>}
-                            <th>Energy (kWh)</th>
-                            <th>No cloud (kWh)</th>
-                            <th>Share</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {aggBuckets.map((b) => (
-                            <tr key={b.key}>
-                              <td>{b.label}</td>
-                              {aggPeriod === 'week' && <td>{formatDate(b.week_start)}</td>}
-                              <td>{Math.round(b.energy_kwh * 10) / 10}</td>
-                              <td>{Math.round(b.energy_clear_kwh * 10) / 10}</td>
-                              <td>{Math.round(b.share * 100)}%</td>
+                  <div className="stab-row">
+                    <section className="chart-block stab-table-block">
+                      <div className="chart-head"><h2>{aggPeriod === 'month' ? 'Monthly' : 'Weekly'} table</h2></div>
+                      <div className="agg-table-wrap">
+                        <table className="agg-table">
+                          <thead>
+                            <tr>
+                              <th>Period</th>
+                              {aggPeriod === 'week' && <th>WC Date</th>}
+                              <th>Energy (kWh)</th>
+                              <th>No cloud (kWh)</th>
+                              <th>Share</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
+                          </thead>
+                          <tbody>
+                            {aggBuckets.map((b) => (
+                              <tr key={b.key}>
+                                <td>{b.label}</td>
+                                {aggPeriod === 'week' && <td>{formatDate(b.week_start)}</td>}
+                                <td>{Math.round(b.energy_kwh * 10) / 10}</td>
+                                <td>{Math.round(b.energy_clear_kwh * 10) / 10}</td>
+                                <td>{Math.round(b.share * 100)}%</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+
+                    <section className="chart-block cloud-block">
+                      <ChartHead title="Cloud index (GHI / GHI_clear)" help={HELP.cloudYear} />
+                      <div className="chart">
+                        <ResponsiveContainer width="100%" height={260}>
+                          <LineChart data={aggBuckets}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="label" interval={aggPeriod === 'week' ? 4 : 0}
+                              tickFormatter={(v) => (aggPeriod === 'month'
+                                ? v.slice(0, 3)
+                                : (aggBuckets.find((x) => x.label === v)?.week_start
+                                  ? formatDate(aggBuckets.find((x) => x.label === v).week_start)
+                                  : v))} />
+                            <YAxis domain={[0, 1.2]} />
+                            <Tooltip formatter={(v) => [v, 'Cloud index']} labelStyle={{ color: '#222' }} />
+                            <ReferenceLine y={1} stroke="#ffb020" strokeDasharray="4 3"
+                              label={{ value: 'clear', position: 'insideTopRight', fill: '#ffb020', fontSize: 11 }} />
+                            <Line type="monotone" dataKey="cloud_index" stroke="#1e88e5" dot={false} strokeWidth={2} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <p className="cloud-note">
+                        Cloud index = GHI ÷ clear-sky GHI. 1.0 = fully clear sky; lower = more cloud.
+                        The chart shows the mean over each {aggPeriod} of the selected year, using the
+                        same {aggPeriod === 'month' ? 'months' : 'weeks'} as the output chart.
+                      </p>
+                    </section>
+                  </div>
                 </>
               )}
             </>
@@ -794,7 +896,9 @@ export default function App() {
                     (18 Aug 2025 – 17 Aug 2026) against the hourly solar output the panel
                     on the left could produce. Each hour, the solar I'd use on-site is
                     subtracted from what I'd pay; any solar I couldn't use is counted as
-                    wasted. All amounts are in NZ dollars.
+                    wasted. Savings and the value of wasted solar are computed
+                    hour-by-hour using each hour's actual bill (the dollars column) — no
+                    average electricity rate is assumed. All amounts are in NZ dollars.
                   </div>
 
                   <section className="report">
@@ -822,17 +926,11 @@ export default function App() {
                           <XAxis dataKey="label" interval={0} tickFormatter={(v) => v.slice(0, 3)} />
                           <YAxis />
                           <Tooltip formatter={(value, name) => [value, name]} labelStyle={{ color: '#222' }} />
-                          <Legend />
-                          <defs>
-                            <pattern id="solarWasted" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
-                              <rect width="6" height="6" fill="#4caf50" />
-                              <line x1="0" y1="0" x2="0" y2="6" stroke="#9e9e9e" strokeWidth="2" />
-                            </pattern>
-                          </defs>
+                          <Legend content={EnergyLegend} />
                           <Bar dataKey="consumption_kwh" name="Consumption" fill="#e2431e" radius={[2, 2, 0, 0]} />
                           <Bar dataKey="grid_kwh" name="Grid import" fill="#1e88e5" radius={[2, 2, 0, 0]} />
                           <Bar dataKey="self_consumed_kwh" name="Solar used" fill="#4caf50" radius={[2, 2, 0, 0]} />
-                          <Bar dataKey="excess_kwh" name="Solar wasted" fill="url(#solarWasted)" radius={[2, 2, 0, 0]} />
+                          <Bar dataKey="excess_kwh" name="Solar wasted" fill="transparent" stroke="#4caf50" strokeWidth={2} radius={[2, 2, 0, 0]} />
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -866,7 +964,7 @@ export default function App() {
                         <thead>
                           <tr>
                             <th>Month</th><th>Use (kWh)</th><th>Solar (kWh)</th><th>Used (kWh)</th>
-                            <th>Wasted (kWh)</th><th>Wasted %</th><th>Grid (kWh)</th><th>Cost ($)</th><th>Saved ($)</th>
+                            <th>Wasted (kWh)</th><th>Wasted %</th><th>Grid (kWh)</th><th>Cost ($)</th><th>Saved ($)</th><th>Wasted ($)</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -881,8 +979,21 @@ export default function App() {
                               <td>{Math.round(m.grid_kwh)}</td>
                               <td>{Math.round(m.cost_$)}</td>
                               <td>{Math.round(m.savings_$)}</td>
+                              <td>{Math.round(m.waste_$)}</td>
                             </tr>
                           ))}
+                          <tr className="agg-total">
+                            <td>Total</td>
+                            <td>{Math.round(moneyTotalRow.consumption_kwh)}</td>
+                            <td>{Math.round(moneyTotalRow.solar_kwh)}</td>
+                            <td>{Math.round(moneyTotalRow.self_consumed_kwh)}</td>
+                            <td>{Math.round(moneyTotalRow.excess_kwh)}</td>
+                            <td>{Math.round((moneyTotalRow.excess_kwh / moneyTotalRow.solar_kwh) * 100)}%</td>
+                            <td>{Math.round(moneyTotalRow.grid_kwh)}</td>
+                            <td>{Math.round(moneyTotalRow.cost_$)}</td>
+                            <td>{Math.round(moneyTotalRow.savings_$)}</td>
+                            <td>{Math.round(moneyTotalRow.waste_$)}</td>
+                          </tr>
                         </tbody>
                       </table>
                     </div>
@@ -895,6 +1006,97 @@ export default function App() {
                     could produce, worth ~${moneyTotals.wasted_value_$}) would be wasted because
                     I couldn't use it the moment it was produced.
                   </div>
+                </>
+              )}
+            </>
+          )}
+
+          {activeTab === 'dataq' && (
+            <>
+              {dqError && <div className="error">{dqError}</div>}
+              {!dqResult && !dqError && (<p className="hint">Loading…</p>)}
+              {dqResult && (
+                <>
+                  <div className="explain">
+                    This tab reports on the quality of the <b>CAMS Radiation</b> dataset for the
+                    selected city (all-sky irradiance, 15-minute intervals). It does <b>not</b> cover
+                    the Christchurch electricity-consumption dataset. CAMS supplies a per-interval
+                    <b> Reliability</b> value (0–1) = the proportion of reliable data in each 15-minute
+                    interval, based on how much the satellite cloud retrieval could be trusted. The
+                    report checks time continuity, radiation plausibility (e.g. no negative values,
+                    GHI ≈ DHI + DNI·cos(zenith)) and the reliability distribution.
+                  </div>
+
+                  <section className="report">
+                    <div className="report-head">
+                      <h2>Data quality — {meta?.name}</h2>
+                      <span className="report-period">{dqResult.span.start.slice(0, 10)} → {dqResult.span.end.slice(0, 10)}</span>
+                    </div>
+                    <div className="report-cards">
+                      <div className="rcard"><span>Rows</span><b>{dqResult.span.rows}</b></div>
+                      <div className="rcard"><span>Interval</span><b>{dqResult.span.interval_h} h</b></div>
+                      <div className="rcard"><span>Completeness</span><b>{dqResult.time.completeness_pct}%</b></div>
+                      <div className="rcard"><span>Duplicates</span><b>{dqResult.time.duplicates}</b></div>
+                      <div className="rcard"><span>Missing</span><b>{dqResult.time.missing_intervals}</b></div>
+                      <div className="rcard"><span>Low reliability</span><b>{dqResult.reliability.low_pct}%</b></div>
+                    </div>
+                  </section>
+
+                  <section className="chart-block">
+                    <div className="chart-head"><h2>Time integrity</h2></div>
+                    <div className="dq-rows">
+                      <div className="dq-row"><span>Expected intervals</span><b>{dqResult.time.expected_intervals}</b></div>
+                      <div className="dq-row"><span>Actual rows</span><b>{dqResult.time.rows}</b></div>
+                      <div className="dq-row"><span>Duplicate timestamps</span><b>{dqResult.time.duplicates}</b></div>
+                      <div className="dq-row"><span>Missing intervals</span><b>{dqResult.time.missing_intervals}</b></div>
+                      <div className="dq-row"><span>UTC timezone-aware</span><b>{dqResult.time.timezone_utc_aware ? 'yes' : 'no'}</b></div>
+                    </div>
+                    {dqResult.time.gaps.length > 0 && (
+                      <ul className="dq-list">
+                        {dqResult.time.gaps.map((g, i) => <li key={i}>Gap of {g.hours}h after {g.after}</li>)}
+                      </ul>
+                    )}
+                  </section>
+
+                  <section className="chart-block">
+                    <div className="chart-head"><h2>Radiation checks</h2></div>
+                    <table className="agg-table dq-table">
+                      <thead><tr><th>Column</th><th>Negative</th><th>Min (W/m²)</th><th>Max (W/m²)</th></tr></thead>
+                      <tbody>
+                        {Object.entries(dqResult.radiation.negatives).map(([c, cnt]) => {
+                          const [mn, mx] = dqResult.radiation.ranges[c];
+                          return (<tr key={c}><td>{c}</td><td>{cnt}</td><td>{mn}</td><td>{mx}</td></tr>);
+                        })}
+                      </tbody>
+                    </table>
+                    <div className="dq-rows">
+                      <div className="dq-row"><span>GHI ≈ DHI + DNI·cos(z), mean residual</span><b>{dqResult.radiation.ghi_conservation.mean_residual} W/m²</b></div>
+                      <div className="dq-row"><span>…max |residual|</span><b>{dqResult.radiation.ghi_conservation.max_abs_residual} W/m²</b></div>
+                      <div className="dq-row"><span>DHI ≤ GHI violations</span><b>{dqResult.radiation.dhi_le_ghi_violations}</b></div>
+                      <div className="dq-row"><span>BHI ≤ GHI violations</span><b>{dqResult.radiation.bhi_le_ghi_violations}</b></div>
+                    </div>
+                  </section>
+
+                  <section className="chart-block">
+                    <div className="chart-head"><h2>Reliability</h2></div>
+                    <div className="dq-rows">
+                      <div className="dq-row"><span>Min</span><b>{dqResult.reliability.min}</b></div>
+                      <div className="dq-row"><span>Median</span><b>{dqResult.reliability.median}</b></div>
+                      <div className="dq-row"><span>Intervals with reliability &lt; 1.0</span><b>{dqResult.reliability.below_1} ({dqResult.reliability.low_pct}%)</b></div>
+                      <div className="dq-row"><span>Intervals with reliability &lt; 0.5</span><b>{dqResult.reliability.below_0_5}</b></div>
+                    </div>
+                  </section>
+
+                  {dqResult.checks.length > 0 && (
+                    <section className="chart-block">
+                      <div className="chart-head"><h2>Findings</h2></div>
+                      <ul className="dq-list">
+                        {dqResult.checks.map((c, i) => (
+                          <li key={i} className={'dq-' + c.level}>{c.level.toUpperCase()}: {c.msg}</li>
+                        ))}
+                      </ul>
+                    </section>
+                  )}
                 </>
               )}
             </>

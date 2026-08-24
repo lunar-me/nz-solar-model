@@ -50,6 +50,10 @@ export function money(payload) {
   }).then(json);
 }
 
+export function dataQuality(location) {
+  return fetch(`${BASE}/data-quality?location=${encodeURIComponent(location)}`).then(json);
+}
+
 export function getRadiation(location, start, end) {
   const p = new URLSearchParams();
   if (start) p.set('start', start);

@@ -26,7 +26,7 @@ class PanelConfig:
 
     tilt: float = 25.0            # degrees from horizontal (0 = flat)
     azimuth: float = 0.0           # degrees from North, meteorological convention
-    rated_power_kwp: float = 1.0  # STC rated power (kWp)
+    rated_power_kwp: float = 5.0  # STC rated power (kWp)
     albedo: float = 0.2           # ground albedo for the reflected component
     transposition_model: str = "perez"
     inverter_efficiency: float = 0.95  # modern string inverters: ~95-98%
@@ -48,8 +48,13 @@ def run_simulation(
     latitude: float,
     longitude: float,
     altitude: float = 0.0,
+    solpos: pd.DataFrame | None = None,
+    dni_extra: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Run the idealized PV simulation for a normalised radiation DataFrame.
+
+    `solpos` / `dni_extra` may be precomputed (cached) to avoid recomputing the
+    expensive solar geometry on every call; they are re-indexed to `radiation`.
 
     Returns a DataFrame indexed by the same UTC timestamps with columns:
         timestamp, sun_elevation_deg, sun_azimuth_deg, aoi_deg,
@@ -59,9 +64,12 @@ def run_simulation(
     times = radiation.index
     interval_h = radiation.attrs.get("interval_h", 0.25)
 
-    solpos = solarposition.get_solarposition(
-        times, latitude=latitude, longitude=longitude, altitude=altitude
-    )
+    if solpos is None:
+        solpos = solarposition.get_solarposition(
+            times, latitude=latitude, longitude=longitude, altitude=altitude
+        )
+    else:
+        solpos = solpos.reindex(times)
     zen = solpos["apparent_zenith"].astype(float)
     elev = solpos["apparent_elevation"].astype(float)
     az = solpos["azimuth"].astype(float)
@@ -73,7 +81,10 @@ def run_simulation(
         solar_azimuth=az,
     )
 
-    dni_extra = irradiance.get_extra_radiation(times)
+    if dni_extra is None:
+        dni_extra = irradiance.get_extra_radiation(times)
+    else:
+        dni_extra = dni_extra.reindex(times)
     poa = irradiance.get_total_irradiance(
         surface_tilt=panel.tilt,
         surface_azimuth=panel.azimuth,
@@ -147,6 +158,14 @@ def run_simulation(
     out["ac_power_clear"] = ac_clear_w.round(3)
     out["energy_wh"] = energy_wh.round(3)
     out["energy_clear_wh"] = energy_clear_wh.round(3)
+    # Cloud index: GHI / clear-sky GHI (1.0 = clear, <1.0 = cloud).
+    # Night (no sunlight) is left as NaN so it is blank on charts and excluded
+    # from monthly/weekly means — including 0 would drag the average down.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ci = radiation["ghi"] / radiation["ghi_clear"]
+    ci = ci.where((radiation["ghi_clear"] > 0.0) & (elev > 0.0), np.nan)
+    ci = ci.clip(lower=0.0, upper=2.0)
+    out["cloud_index"] = ci.round(4)
     return out
 
 
@@ -186,20 +205,22 @@ def aggregate_energy(result: pd.DataFrame, period: str) -> list[dict]:
     local = result.index.tz_convert("Pacific/Auckland")
     real = result["energy_wh"].to_numpy()
     clear = result["energy_clear_wh"].to_numpy()
+    ci = result["cloud_index"].to_numpy()
 
     if period == "month":
         per = local.to_period("M")
         sr = pd.Series(real, index=per).groupby(level=0).sum()
         sc = pd.Series(clear, index=per).groupby(level=0).sum()
+        sm_ci = pd.Series(ci, index=per).groupby(level=0).mean()
         keys = [str(p) for p in sr.index]
         labels = [f"{p.strftime('%b %Y')}" for p in sr.index]
         week_start = [None] * len(sr)
     elif period == "week":
         cal = local.isocalendar()
         df = pd.DataFrame({"y": cal.year.to_numpy(), "w": cal.week.to_numpy(),
-                           "re": real, "ce": clear})
-        g = df.groupby(["y", "w"], sort=True)[["re", "ce"]].sum()
-        sr, sc = g["re"], g["ce"]
+                           "re": real, "ce": clear, "ci": ci})
+        g = df.groupby(["y", "w"], sort=True).agg({"re": "sum", "ce": "sum", "ci": "mean"})
+        sr, sc, sm_ci = g["re"], g["ce"], g["ci"]
         keys = [f"{y}-W{w:02d}" for y, w in g.index]
         labels = [f"{y} W{w:02d}" for y, w in g.index]
         week_start = [_date.fromisocalendar(y, w, 1).isoformat() for y, w in g.index]
@@ -217,6 +238,7 @@ def aggregate_energy(result: pd.DataFrame, period: str) -> list[dict]:
             "energy_kwh": round(re_wh / 1000.0, 3),
             "energy_clear_kwh": round(ce_wh / 1000.0, 3),
             "no_cloud_extra": round(max(ce_wh - re_wh, 0.0) / 1000.0, 3),
+            "cloud_index": round(float(sm_ci.values[i]), 3),
             "share": round(re_wh / total, 4) if total else 0.0,
             "week_start": week_start[i],
         })
@@ -228,4 +250,108 @@ def aggregate_energy(result: pd.DataFrame, period: str) -> list[dict]:
 
     return out
 
+
+
+
+def data_quality_report(
+    radiation: pd.DataFrame,
+    latitude: float,
+    longitude: float,
+    altitude: float = 0.0,
+) -> dict:
+    """Build a data-quality report for a normalised radiation dataset.
+
+    Checks (idea.md #14):
+      * time: resolution, expected vs actual rows, duplicate timestamps, gaps
+      * radiation: negative values, GHI ~ DHI + DNI*cos(zenith), plausibility
+      * reliability: distribution of the reliability flag
+    """
+    idx = radiation.index
+    n = int(len(radiation))
+    interval_h = float(radiation.attrs.get("interval_h", 0.25))
+    span_h = float((idx.max() - idx.min()).total_seconds() / 3600.0) if n > 1 else 0.0
+    expected = int(round(span_h / interval_h)) + 1 if n > 1 else n
+
+    diffs = idx.to_series().diff().dt.total_seconds().dropna()
+    gaps = diffs[diffs > interval_h * 3600 * 1.5]
+    biggest = gaps.sort_values(ascending=False).head(5)
+    gap_list = [
+        {"after": str(ts_gap), "hours": round(hours / 3600.0, 2)}
+        for ts_gap, hours in biggest.items()
+    ]
+    duplicates = int(idx.duplicated().sum())
+    missing = max(expected - n, 0)
+
+    rad_cols = ["ghi", "dhi", "dni", "ghi_clear", "dhi_clear", "dni_clear"]
+    negatives = {c: int((radiation[c] < 0).sum()) for c in rad_cols}
+    ranges = {
+        c: [round(float(radiation[c].min()), 1), round(float(radiation[c].max()), 1)]
+        for c in rad_cols
+    }
+
+    # GHI conservation: GHI ~= DHI + BHI, with BHI = DNI * cos(zenith).
+    zen = solarposition.get_solarposition(
+        idx, latitude=latitude, longitude=longitude, altitude=altitude
+    )["apparent_zenith"]
+    bhi = radiation["dni"] * np.cos(np.radians(zen))
+    residual = radiation["ghi"] - (radiation["dhi"] + bhi)
+
+    rel = radiation["reliability"]
+    rel_report = {
+        "min": round(float(rel.min()), 3),
+        "median": round(float(rel.median()), 3),
+        "below_1": int((rel < 1.0).sum()),
+        "below_0_5": int((rel < 0.5).sum()),
+        "low_pct": round(float((rel < 1.0).sum()) / n * 100.0, 2) if n else 0.0,
+    }
+
+    checks = []
+    for c, cnt in negatives.items():
+        if cnt:
+            checks.append({"level": "error", "msg": f"{c}: {cnt} negative values"})
+    if duplicates:
+        checks.append({"level": "warn", "msg": f"{duplicates} duplicate timestamps"})
+    if missing:
+        checks.append({"level": "warn", "msg": f"{missing} missing intervals"})
+    for g in gap_list:
+        checks.append({"level": "warn",
+                       "msg": f"gap of {g['hours']}h after {g['after']}"})
+    if abs(float(residual.mean())) > 5.0:
+        checks.append({"level": "warn",
+                       "msg": f"GHI-(DHI+DNI*cosz) mean residual {float(residual.mean()):.1f} W/m2"})
+    if rel_report["low_pct"] > 5.0:
+        checks.append({"level": "info",
+                       "msg": f"{rel_report['low_pct']}% of intervals have reliability < 1.0"})
+
+    status = "good" if not any(c["level"] == "error" for c in checks) else "issues"
+    return {
+        "span": {
+            "start": str(idx.min()),
+            "end": str(idx.max()),
+            "interval_h": interval_h,
+            "rows": n,
+        },
+        "time": {
+            "expected_intervals": expected,
+            "rows": n,
+            "duplicates": duplicates,
+            "missing_intervals": missing,
+            "completeness_pct": round(n / expected * 100.0, 2) if expected else 100.0,
+            "gaps": gap_list,
+            "timezone_utc_aware": bool(idx.tz is not None),
+        },
+        "radiation": {
+            "negatives": negatives,
+            "ranges": ranges,
+            "ghi_conservation": {
+                "mean_residual": round(float(residual.mean()), 3),
+                "max_abs_residual": round(float(residual.abs().max()), 3),
+            },
+            "dhi_le_ghi_violations": int((radiation["dhi"] > radiation["ghi"] + 0.01).sum()),
+            "bhi_le_ghi_violations": int((bhi > radiation["ghi"] + 0.01).sum()),
+        },
+        "reliability": rel_report,
+        "checks": checks,
+        "status": status,
+    }
 
