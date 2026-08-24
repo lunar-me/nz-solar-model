@@ -42,6 +42,14 @@ export function stability(payload) {
   }).then(json);
 }
 
+export function money(payload) {
+  return fetch(`${BASE}/money`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(json);
+}
+
 export function getRadiation(location, start, end) {
   const p = new URLSearchParams();
   if (start) p.set('start', start);

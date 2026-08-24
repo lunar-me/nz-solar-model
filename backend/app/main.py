@@ -10,12 +10,14 @@ from functools import lru_cache
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
+import numpy as np
 import statistics
 
 from .engine import PanelConfig, run_simulation, summarize, aggregate_energy
-from .loader import load_radiation
-from .locations import LOCATIONS, get_location
-from .schemas import AggregateRequest, SimulateRequest, StabilityRequest
+from .loader import load_radiation, load_electricity
+from .locations import LOCATIONS, get_location, DATA_DIR
+from .schemas import (AggregateRequest, SimulateRequest, StabilityRequest,
+                      MoneyRequest)
 
 app = FastAPI(
     title="NZ Solar PV Model",
@@ -309,5 +311,131 @@ def stability(req: StabilityRequest) -> dict:
         "panel": req.panel.model_dump(),
         "years": years,
         "metrics": metrics,
+    }
+
+
+
+@lru_cache(maxsize=1)
+def _christchurch_hourly_radiation() -> pd.DataFrame:
+    """Combined 1-hour Christchurch radiation (2020-2025 + 2026 files)."""
+    f1 = DATA_DIR / "CAMS Radiation - 1h - Christchurch - 20200101 - 20251231.csv"
+    f2 = DATA_DIR / "CAMS Radiation - 1h - Christchurch - 20260101 - 20260823.csv"
+    rads = [load_radiation(f1), load_radiation(f2)]
+    rad = pd.concat(rads).sort_index()
+    rad = rad[~rad.index.duplicated(keep="first")]
+    rad.attrs["interval_h"] = 1.0
+    return rad
+
+
+@app.post("/api/money")
+def money(req: MoneyRequest) -> dict:
+    """Solar self-consumption & savings against the fixed Christchurch year."""
+    if req.location != "christchurch":
+        raise HTTPException(400, detail="'My money' tab is locked to Christchurch.")
+
+    el = load_electricity()  # hourly consumption (kWh) + cost ($), UTC index
+    meta = _christchurch_hourly_radiation().attrs.get("metadata", {})
+    panel = PanelConfig(
+        tilt=req.panel.tilt,
+        azimuth=req.panel.azimuth,
+        rated_power_kwp=req.panel.rated_power_kwp,
+        albedo=req.panel.albedo,
+        transposition_model=req.panel.transposition_model,
+        inverter_efficiency=req.panel.inverter_efficiency,
+    )
+
+    start = el.index.min()
+    end = el.index.max()
+    rad = _christchurch_hourly_radiation().loc[start:end]
+    result = run_simulation(
+        rad, panel=panel,
+        latitude=meta.get("latitude", 0.0),
+        longitude=meta.get("longitude", 0.0),
+        altitude=meta.get("altitude", 0.0),
+    )
+    solar = (result["energy_wh"] / 1000.0).rename("solar_kwh")
+
+    df = pd.concat([el, solar], axis=1).sort_index()
+    df["solar_kwh"] = df["solar_kwh"].fillna(0.0)
+    df["consumption_kwh"] = df["consumption_kwh"].fillna(0.0)
+    df["cost_$"] = df["cost_$"].fillna(0.0)
+
+    cons = df["consumption_kwh"].to_numpy()
+    sol = df["solar_kwh"].to_numpy()
+    cost = df["cost_$"].to_numpy()
+
+    self_kwh = np.minimum(cons, sol)
+    excess_kwh = np.maximum(sol - cons, 0.0)
+    grid_kwh = np.maximum(cons - sol, 0.0)
+    frac = np.divide(self_kwh, cons, out=np.zeros_like(cons), where=cons > 0)
+    savings = frac * cost
+    net = cost - savings
+
+    df["self_consumed_kwh"] = self_kwh
+    df["excess_kwh"] = excess_kwh
+    df["grid_kwh"] = grid_kwh
+    df["savings_$"] = savings
+    df["net_$"] = net
+
+    # Effective price used to value wasted solar.
+    total_cost = float(cost.sum())
+    total_cons = float(cons.sum())
+    eff_price = total_cost / total_cons if total_cons else 0.0
+    price = req.price_per_kwh if req.price_per_kwh is not None else eff_price
+    df["waste_$"] = df["excess_kwh"] * price
+
+    solar_kwh = float(sol.sum())
+    self_sum = float(self_kwh.sum())
+    excess_sum = float(excess_kwh.sum())
+    grid_sum = float(grid_kwh.sum())
+    savings_sum = float(savings.sum())
+    waste_sum = float(df["waste_$"].sum())
+
+    totals = {
+        "consumption_kwh": round(total_cons, 1),
+        "solar_kwh": round(solar_kwh, 1),
+        "self_consumed_kwh": round(self_sum, 1),
+        "excess_kwh": round(excess_sum, 1),
+        "grid_import_kwh": round(grid_sum, 1),
+        "self_consumption_pct": round(self_sum / solar_kwh * 100, 1) if solar_kwh else 0.0,
+        "solar_coverage_pct": round(self_sum / total_cons * 100, 1) if total_cons else 0.0,
+        "cost_without_solar_$": round(total_cost, 2),
+        "cost_with_solar_$": round(total_cost - savings_sum, 2),
+        "savings_$": round(savings_sum, 2),
+        "savings_pct": round(savings_sum / total_cost * 100, 1) if total_cost else 0.0,
+        "wasted_value_$": round(waste_sum, 2),
+        "price_per_kwh": round(price, 3),
+    }
+
+    # Monthly aggregation (NZ-local months).
+    local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+    g = df.groupby(local).agg({
+        "consumption_kwh": "sum", "solar_kwh": "sum",
+        "self_consumed_kwh": "sum", "excess_kwh": "sum", "grid_kwh": "sum",
+        "cost_$": "sum", "savings_$": "sum", "waste_$": "sum",
+    })
+    monthly = []
+    for p in g.index:
+        r = g.loc[p]
+        monthly.append({
+            "month": str(p),
+            "label": p.strftime("%b %Y"),
+            "consumption_kwh": round(float(r["consumption_kwh"]), 1),
+            "solar_kwh": round(float(r["solar_kwh"]), 1),
+            "self_consumed_kwh": round(float(r["self_consumed_kwh"]), 1),
+            "excess_kwh": round(float(r["excess_kwh"]), 1),
+            "grid_kwh": round(float(r["grid_kwh"]), 1),
+            "cost_$": round(float(r["cost_$"]), 2),
+            "savings_$": round(float(r["savings_$"]), 2),
+            "waste_$": round(float(r["waste_$"]), 2),
+        })
+
+    return {
+        "location": "christchurch",
+        "metadata": meta,
+        "panel": req.panel.model_dump(),
+        "price_per_kwh": round(price, 3),
+        "totals": totals,
+        "monthly": monthly,
     }
 

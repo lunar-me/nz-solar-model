@@ -5,7 +5,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { getLocations, simulate, aggregate, stability } from './api.js';
+import { getLocations, simulate, aggregate, stability, money } from './api.js';
 
 const TRANSPOSITION_MODELS = ['perez', 'haydavies', 'isotropic'];
 
@@ -147,6 +147,18 @@ const HELP = {
     title: 'Year-over-year stability',
     text: 'Plots the total annual output (real, with clouds) and the no-cloud reference for every calendar year in the dataset. The table lists each year, and the metrics on the right quantify how stable output is year over year (coefficient of variation and the count of year-over-year changes of at least 5%).',
   },
+  price: {
+    title: 'Electricity price',
+    text: 'Used only to value the solar you can\'t use (wasted). Leave blank to use the bill\'s effective rate (~$0.239/kWh in this dataset). Your actual bill already reflects the real per-hour cost, so savings are computed from the dollars column.',
+  },
+  moneyEnergy: {
+    title: 'Monthly energy',
+    text: 'For each month: total consumption (red), how much was drawn from the grid (blue), solar used on-site (green), and solar that couldn\'t be used and was wasted (light green).',
+  },
+  moneyCost: {
+    title: 'Monthly cost',
+    text: 'The red bar is what the month\'s electricity would have cost with no solar; the green bar is the actual cost with solar. The gap between them is what you saved.',
+  },
   chartPower: {
     title: 'PV output chart',
     text: 'Plots inverter AC power (watts) at each 15-minute step. The curve follows sunlight through the day and drops to zero at night. The dashed green line shows what the panel would produce with no clouds (clear-sky reference) and can be toggled off. A mean line plus the period’s Total and no-cloud energy are shown on the chart.',
@@ -235,6 +247,11 @@ export default function App() {
   const [stabLoading, setStabLoading] = useState(false);
   const [stabError, setStabError] = useState(null);
 
+  const [moneyResult, setMoneyResult] = useState(null);
+  const [moneyLoading, setMoneyLoading] = useState(false);
+  const [moneyError, setMoneyError] = useState(null);
+  const [pricePerKwh, setPricePerKwh] = useState('');
+
   useEffect(() => {
     getLocations().then(setLocations).catch((e) => setError(e.message));
   }, []);
@@ -293,6 +310,22 @@ export default function App() {
 
   useEffect(() => { runStability(); }, [runStability]);
 
+  const runMoney = useCallback(async () => {
+    setMoneyLoading(true);
+    setMoneyError(null);
+    const ppk = pricePerKwh && Number(pricePerKwh) > 0 ? Number(pricePerKwh) : null;
+    try {
+      const data = await money({ location: 'christchurch', panel, price_per_kwh: ppk });
+      setMoneyResult(data);
+    } catch (e) {
+      setMoneyError(e.message);
+    } finally {
+      setMoneyLoading(false);
+    }
+  }, [panel, pricePerKwh]);
+
+  useEffect(() => { runMoney(); }, [runMoney]);
+
   const meta = locations.find((l) => l.key === location);
   const timeseries = useMemo(() => result?.timeseries ?? [], [result]);
   const summary = result?.summary ?? null;
@@ -304,6 +337,17 @@ export default function App() {
   const aggTitle = `${aggPeriod === 'month' ? 'Monthly' : 'Weekly'} output (kWh), ${year}`;
   const stabYears = stabResult?.years ?? [];
   const stabMetrics = stabResult?.metrics ?? null;
+  const moneyTotals = moneyResult?.totals ?? null;
+  const busy = activeTab === 'daily' ? loading
+    : activeTab === 'year' ? aggLoading
+    : activeTab === 'stability' ? stabLoading
+    : moneyLoading;
+  const moneyMonthly = useMemo(() => (moneyResult?.monthly ?? []).map((m) => ({
+    ...m,
+    cost_without: m.cost_$,
+    cost_with: +(m.cost_$ - m.savings_$).toFixed(2),
+    wasted_pct: m.solar_kwh > 0 ? Math.round((m.excess_kwh / m.solar_kwh) * 100) : 0,
+  })), [moneyResult]);
   return (
     <div className="app">
       <header>
@@ -327,13 +371,19 @@ export default function App() {
         <button className={activeTab === 'daily' ? 'tab active' : 'tab'} onClick={() => setActiveTab('daily')}>Daily</button>
         <button className={activeTab === 'year' ? 'tab active' : 'tab'} onClick={() => setActiveTab('year')}>Year</button>
         <button className={activeTab === 'stability' ? 'tab active' : 'tab'} onClick={() => setActiveTab('stability')}>Stability</button>
+        <button className={activeTab === 'money' ? 'tab active' : 'tab'} onClick={() => { setLocation('christchurch'); setActiveTab('money'); }}>$ My money</button>
       </div>
       <div className="layout">
         <aside className="controls">
+          <fieldset className="controls-field" disabled={busy}>
           <section>
             <h2>Location</h2>
             <Field label="City" help={HELP.city}>
-              <select value={location} onChange={(e) => setLocation(e.target.value)}>
+              <select
+                value={activeTab === 'money' ? 'christchurch' : location}
+                onChange={(e) => setLocation(e.target.value)}
+                disabled={activeTab === 'money'}
+              >
                 {locations.map((l) => (
                   <option key={l.key} value={l.key}>{l.name}</option>
                 ))}
@@ -361,7 +411,7 @@ export default function App() {
               <Compass tilt={panel.tilt} azimuth={panel.azimuth} />
             </div>
             <Field label="Rated power (kWp)" help={HELP.power}>
-              <input type="number" min="0.1" step="0.1" value={panel.rated_power_kwp}
+              <input type="number" min="1" step="1" value={panel.rated_power_kwp}
                 onChange={set('rated_power_kwp')} />
             </Field>
             <Field label="Albedo" help={HELP.albedo}>
@@ -380,6 +430,16 @@ export default function App() {
                 value={panel.inverter_efficiency} onChange={set('inverter_efficiency')} />
             </Field>
           </section>
+
+          {activeTab === 'money' && (
+            <section>
+              <h2>Pricing</h2>
+              <Field label="Price ($/kWh, for wasted solar)" help={HELP.price}>
+                <input type="number" min="0" step="0.01" placeholder="auto"
+                  value={pricePerKwh} onChange={(e) => setPricePerKwh(e.target.value)} />
+              </Field>
+            </section>
+          )}
 
           {activeTab === 'daily' && (
             <section>
@@ -414,12 +474,23 @@ export default function App() {
             </section>
           )}
 
-                    <button
-            onClick={() => (activeTab === 'daily' ? run() : activeTab === 'year' ? runYear() : runStability())}
-            disabled={activeTab === 'daily' ? loading : activeTab === 'year' ? aggLoading : stabLoading}
+                    </fieldset>
+
+          <button
+            onClick={() => (activeTab === 'daily' ? run()
+              : activeTab === 'year' ? runYear()
+              : activeTab === 'stability' ? runStability()
+              : runMoney())}
+            disabled={activeTab === 'daily' ? loading
+              : activeTab === 'year' ? aggLoading
+              : activeTab === 'stability' ? stabLoading
+              : moneyLoading}
             className="run"
           >
-            {(activeTab === 'daily' ? loading : activeTab === 'year' ? aggLoading : stabLoading) ? 'Running\u2026' : 'Run'}
+            {(activeTab === 'daily' ? loading
+              : activeTab === 'year' ? aggLoading
+              : activeTab === 'stability' ? stabLoading
+              : moneyLoading) ? 'Running\u2026' : 'Run'}
           </button>
         </aside>
 
@@ -442,6 +513,7 @@ export default function App() {
                   </span>
                 </div>
                 <div className="report-cards">
+                  <div className="rcard"><span>Installed PV</span><b>{panel.rated_power_kwp} kWp</b></div>
                   <div className="rcard"><span>Total</span><b>{summary.total_energy_kwh} kWh</b></div>
                   <div className="rcard"><span>No cloud</span><b>{summary.total_energy_clear_kwh} kWh</b></div>
                   <div className="rcard"><span>Peak</span><b>{summary.peak_power_kw} kW</b></div>
@@ -544,6 +616,7 @@ export default function App() {
                       <span className="report-period">{year}</span>
                     </div>
                     <div className="report-cards">
+                      <div className="rcard"><span>Installed PV</span><b>{panel.rated_power_kwp} kWp</b></div>
                       <div className="rcard"><span>Total</span><b>{Math.round(aggSummary.total_energy_kwh)} kWh</b></div>
                       <div className="rcard"><span>No cloud</span><b>{Math.round(aggSummary.total_energy_clear_kwh)} kWh</b></div>
                       <div className="rcard"><span>Peak</span><b>{aggSummary.peak_power_kw} kW</b></div>
@@ -709,7 +782,125 @@ export default function App() {
               )}
             </>
           )}
+
+          {activeTab === 'money' && (
+            <>
+              {moneyError && <div className="error">{moneyError}</div>}
+              {!moneyResult && !moneyError && (<p className="hint">Loading…</p>)}
+              {moneyResult && (
+                <>
+                  <div className="explain">
+                    This tab models my hourly Christchurch electricity consumption
+                    (18 Aug 2025 – 17 Aug 2026) against the hourly solar output the panel
+                    on the left could produce. Each hour, the solar I'd use on-site is
+                    subtracted from what I'd pay; any solar I couldn't use is counted as
+                    wasted. All amounts are in NZ dollars.
+                  </div>
+
+                  <section className="report">
+                    <div className="report-head">
+                      <h2>Solar savings</h2>
+                      <span className="report-period">18 Aug 2025 – 17 Aug 2026 · Christchurch</span>
+                    </div>
+                    <div className="report-cards">
+                      <div className="rcard"><span>Installed PV</span><b>{panel.rated_power_kwp} kWp</b></div>
+                      <div className="rcard money-highlight"><span>Savings</span><b>${moneyTotals.savings_$} ({moneyTotals.savings_pct}%)</b></div>
+                      <div className="rcard"><span>Bill without solar</span><b>${moneyTotals.cost_without_solar_$}</b></div>
+                      <div className="rcard"><span>Bill with solar</span><b>${moneyTotals.cost_with_solar_$}</b></div>
+                      <div className="rcard"><span>Wasted solar value</span><b>${moneyTotals.wasted_value_$}</b></div>
+                      <div className="rcard"><span>Self-consumed</span><b>{moneyTotals.self_consumed_kwh} kWh ({moneyTotals.self_consumption_pct}%)</b></div>
+                      <div className="rcard"><span>Grid import</span><b>{moneyTotals.grid_import_kwh} kWh</b></div>
+                    </div>
+                  </section>
+
+                  <section className="chart-block">
+                    <ChartHead title="Monthly energy (kWh)" help={HELP.moneyEnergy} />
+                    <div className="chart">
+                      <ResponsiveContainer width="100%" height={340}>
+                        <BarChart data={moneyMonthly} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+                          <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                          <XAxis dataKey="label" interval={0} tickFormatter={(v) => v.slice(0, 3)} />
+                          <YAxis />
+                          <Tooltip formatter={(value, name) => [value, name]} labelStyle={{ color: '#222' }} />
+                          <Legend />
+                          <defs>
+                            <pattern id="solarWasted" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+                              <rect width="6" height="6" fill="#4caf50" />
+                              <line x1="0" y1="0" x2="0" y2="6" stroke="#9e9e9e" strokeWidth="2" />
+                            </pattern>
+                          </defs>
+                          <Bar dataKey="consumption_kwh" name="Consumption" fill="#e2431e" radius={[2, 2, 0, 0]} />
+                          <Bar dataKey="grid_kwh" name="Grid import" fill="#1e88e5" radius={[2, 2, 0, 0]} />
+                          <Bar dataKey="self_consumed_kwh" name="Solar used" fill="#4caf50" radius={[2, 2, 0, 0]} />
+                          <Bar dataKey="excess_kwh" name="Solar wasted" fill="url(#solarWasted)" radius={[2, 2, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </section>
+
+                  <section className="chart-block">
+                    <ChartHead title="Monthly cost (NZD)" help={HELP.moneyCost} />
+                    <div className="chart">
+                      <ResponsiveContainer width="100%" height={300}>
+                        <BarChart data={moneyMonthly} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+                          <CartesianGrid vertical={false} strokeDasharray="3 3" />
+                          <XAxis dataKey="label" interval={0} tickFormatter={(v) => v.slice(0, 3)} />
+                          <YAxis />
+                          <Tooltip formatter={(value, name) => [`$${value}`, name]} labelStyle={{ color: '#222' }} />
+                          <Legend />
+                          <Bar dataKey="cost_without" name="Without solar ($)" fill="#fbc02d" radius={[2, 2, 0, 0]}>
+                            <LabelList dataKey="cost_without" position="top" formatter={(v) => `$${Math.round(v)}`} />
+                          </Bar>
+                          <Bar dataKey="cost_with" name="With solar ($)" fill="#4caf50" radius={[2, 2, 0, 0]}>
+                            <LabelList dataKey="cost_with" position="top" formatter={(v) => `$${Math.round(v)}`} />
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </section>
+
+                  <section className="chart-block">
+                    <div className="chart-head"><h2>Monthly detail</h2></div>
+                    <div className="agg-table-wrap">
+                      <table className="agg-table money-table">
+                        <thead>
+                          <tr>
+                            <th>Month</th><th>Use (kWh)</th><th>Solar (kWh)</th><th>Used (kWh)</th>
+                            <th>Wasted (kWh)</th><th>Wasted %</th><th>Grid (kWh)</th><th>Cost ($)</th><th>Saved ($)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {moneyMonthly.map((m) => (
+                            <tr key={m.month}>
+                              <td>{m.label}</td>
+                              <td>{Math.round(m.consumption_kwh)}</td>
+                              <td>{Math.round(m.solar_kwh)}</td>
+                              <td>{Math.round(m.self_consumed_kwh)}</td>
+                              <td>{Math.round(m.excess_kwh)}</td>
+                              <td>{m.wasted_pct}%</td>
+                              <td>{Math.round(m.grid_kwh)}</td>
+                              <td>{Math.round(m.cost_$)}</td>
+                              <td>{Math.round(m.savings_$)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
+                  <div className="money-final">
+                    Over the year, solar could save me <b>${moneyTotals.savings_$}</b> ({moneyTotals.savings_pct}%
+                    of my bill) — and <b>{moneyTotals.excess_kwh} kWh</b> of solar (
+                    {Math.round((moneyTotals.excess_kwh / moneyTotals.solar_kwh) * 100)}% of what I
+                    could produce, worth ~${moneyTotals.wasted_value_$}) would be wasted because
+                    I couldn't use it the moment it was produced.
+                  </div>
+                </>
+              )}
+            </>
+          )}
         </main>
+
       </div>
     </div>
   );

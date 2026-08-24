@@ -37,3 +37,12 @@ class StabilityRequest(BaseModel):
     location: str = Field(..., description="Location key, e.g. 'auckland'")
     panel: PanelConfigIn = Field(default_factory=PanelConfigIn)
 
+
+class MoneyRequest(BaseModel):
+    """Solar self-consumption / savings over the fixed Christchurch year."""
+    location: str = Field("christchurch", description="Locked to Christchurch")
+    price_per_kwh: float | None = Field(
+        None, gt=0.0,
+        description="$/kWh used to value wasted solar; defaults to the bill's effective rate")
+    panel: PanelConfigIn = Field(default_factory=PanelConfigIn)
+

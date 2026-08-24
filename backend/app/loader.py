@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pandas as pd
 
+DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+
 # Order of columns in the CAMS export (after the '#' header block).
 CAMS_COLUMNS = [
     "Observation_period",
@@ -112,3 +114,40 @@ def load_radiation(path: Path) -> pd.DataFrame:
     out.attrs["interval_h"] = interval_h
     out.attrs["metadata"] = parse_metadata(path)
     return out
+
+
+# Hourly household electricity consumption for Christchurch (2025-08-18..2026-08-17).
+ELECTRICITY_FILE = (
+    DATA_DIR / "Christchurch Electricity - 1h - 2025-08-18 - 2026-08-17.csv"
+)
+
+
+def load_electricity(path: Path | None = None) -> pd.DataFrame:
+    """Load the hourly Christchurch electricity CSV.
+
+    Returns a DataFrame indexed by timezone-aware UTC with columns:
+        consumption_kwh : hourly usage (kWh)
+        cost_$         : the actual bill for that hour (NZD)
+    The CSV timestamps are NZ-local (Pacific/Auckland) hour starts.
+    """
+    path = path or ELECTRICITY_FILE
+    raw = pd.read_csv(path)
+
+    idx = pd.to_datetime(raw["date"], format="%I:%M%p %d %B %Y")
+    idx = idx.dt.tz_localize("Pacific/Auckland",
+                             ambiguous="infer", nonexistent="NaT")
+    idx = idx.dt.tz_convert("UTC")
+    mask = idx.notna().to_numpy()
+    idx = idx[mask]
+    idx.name = None
+
+    consumption = pd.to_numeric(raw["usage"].str.replace(" kWh", "", regex=False),
+                                errors="coerce").to_numpy()
+    dollars = pd.to_numeric(raw["dollars"].str.replace("$", "", regex=False),
+                            errors="coerce").to_numpy()
+
+    out = pd.DataFrame({"consumption_kwh": consumption[mask],
+                        "cost_$": dollars[mask]}, index=idx)
+    out = out[~out.index.duplicated(keep="first")].sort_index()
+    return out
+
