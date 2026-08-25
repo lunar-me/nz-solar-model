@@ -545,9 +545,7 @@ def data_quality(location: str = Query(...)) -> dict:
         "altitude": loc.altitude,
     }
     try:
-        report = fetch_data_quality(
-            loc.supabase_name, loc.latitude, loc.longitude, loc.altitude
-        )
+        report = fetch_data_quality(loc.supabase_name)
     except RPCFunctionNotFoundError:
         rad = _cached_radiation(location)
         report = data_quality_report(

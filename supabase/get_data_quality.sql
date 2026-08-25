@@ -14,7 +14,7 @@
 -- Run this once in the Supabase SQL editor (or as a migration). It is
 -- idempotent: it creates the supporting index and (re)defines the function.
 -- The app calls it via PostgREST RPC:  POST /rest/v1/rpc/get_data_quality
---     body: {"location":"Auckland","latitude":-36.73,"longitude":174.71,"altitude":51}
+--     body: {"location":"Auckland"}
 --
 -- Performance: the original version did ~9 separate full scans/sorts of the
 -- table and hit Supabase's statement_timeout. This version scans the table
@@ -28,10 +28,7 @@ CREATE INDEX IF NOT EXISTS idx_cams_radiation_location_ts
     ON cams_radiation (location, start_ts_utc);
 
 CREATE OR REPLACE FUNCTION public.get_data_quality(
-    location   text,
-    latitude   double precision,
-    longitude  double precision,
-    altitude   double precision
+    location   text
 )
 RETURNS jsonb
 LANGUAGE plpgsql

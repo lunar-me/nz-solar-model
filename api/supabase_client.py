@@ -248,8 +248,7 @@ class RPCFunctionNotFoundError(RuntimeError):
     """A PostgREST RPC function is not installed on the Supabase project yet."""
 
 
-def fetch_data_quality(location: str, latitude: float, longitude: float,
-                       altitude: float) -> dict:
+def fetch_data_quality(location: str) -> dict:
     """Compute the Data Quality report server-side via the PostgREST RPC.
 
     Delegates the whole report to the ``get_data_quality`` Postgres function
@@ -263,16 +262,7 @@ def fetch_data_quality(location: str, latitude: float, longitude: float,
     url = f"https://{SUPABASE_URL}/rest/v1/rpc/get_data_quality"
     _t0 = time.perf_counter()
     with httpx.Client(timeout=120.0) as client:
-        resp = client.post(
-            url,
-            headers=_headers(),
-            json={
-                "location": location,
-                "latitude": latitude,
-                "longitude": longitude,
-                "altitude": altitude,
-            },
-        )
+        resp = client.post(url, headers=_headers(), json={"location": location})
         if resp.status_code == 404:
             raise RPCFunctionNotFoundError("get_data_quality")
         resp.raise_for_status()
