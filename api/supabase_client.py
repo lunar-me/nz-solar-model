@@ -21,7 +21,8 @@ from pathlib import Path
 import httpx
 
 # Load .env from the repo root if present (keeps credentials out of code).
-_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
+# api/supabase_client.py -> parent.parent == project root.
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 if _ENV_PATH.exists():
     from dotenv import load_dotenv
 
@@ -51,15 +52,27 @@ _PAGE_SIZE = 1000
 
 # Audit log: every Supabase fetch is recorded here (table, filters, rows,
 # elapsed time) so data provenance / performance can be inspected later.
+#
+# The log FILE is only written when running locally — detected by the presence
+# of the repo-root `.env` (gitignored, so it never exists on Vercel; credentials
+# there come from env vars). Vercel's serverless filesystem is ephemeral and
+# nothing persists, so on Vercel we send the same records to stdout instead,
+# where they surface in the platform's function logs.
+_IS_LOCAL = _ENV_PATH.exists()
 _LOG_FILE = Path(__file__).resolve().parent / "supabase_requests.log"
 _logger = logging.getLogger("supabase_client")
 if not _logger.handlers:
-    _handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
-    _handler.setFormatter(
-        logging.Formatter("%(asctime)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-    )
-    _logger.addHandler(_handler)
     _logger.setLevel(logging.INFO)
+    _fmt = logging.Formatter(
+        "%(asctime)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    _handler = (
+        logging.FileHandler(_LOG_FILE, encoding="utf-8")
+        if _IS_LOCAL
+        else logging.StreamHandler()
+    )
+    _handler.setFormatter(_fmt)
+    _logger.addHandler(_handler)
     _logger.propagate = False
 
 

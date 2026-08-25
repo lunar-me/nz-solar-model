@@ -216,7 +216,7 @@ diffuse-transposition reacting to a (higher) cloudy-sky DHI, which is a known ar
 <h2>6. Realisation in Python</h2>
 <p>The implementation is organised into a thin data layer, a physics engine, and an HTTP API.</p>
 
-<h3>6.1 Data loader (<code>backend/app/loader.py</code>)</h3>
+<h3>6.1 Data loader (<code>api/loader.py</code>)</h3>
 <p>
 Reads a CAMS CSV, skipping the <code>#</code>-comment header block, and parses the site latitude, longitude and
 altitude from that header. It normalises the CAMS column names to an internal schema
@@ -225,7 +225,7 @@ altitude from that header. It normalises the CAMS column names to an internal sc
 the interval length so energy can be reconstructed later.
 </p>
 
-<h3>6.2 The engine (<code>backend/app/engine.py</code>)</h3>
+<h3>6.2 The engine (<code>api/engine.py</code>)</h3>
 <p>
 A single function, <code>run_simulation</code>, implements &sect;5 in a few vectorised steps using pvlib:
 </p>
@@ -244,7 +244,7 @@ GHI/DHI/DNI, all POA components, DC/AC power, clear-sky AC power, and energy), p
 specific yield, mean AC power, and the no-cloud total).
 </p>
 
-<h3>6.3 The API (<code>backend/app/main.py</code>)</h3>
+<h3>6.3 The API (<code>api/index.py</code>)</h3>
 <p>
 A <strong>FastAPI</strong> application exposes the model over HTTP. Each site&rsquo;s dataset is cached in memory after first
 load (an <code>lru_cache</code> keyed by location). Endpoints:

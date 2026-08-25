@@ -1,14 +1,22 @@
 """FastAPI application exposing the location-switchable PV model.
 
-Run from the backend/ directory:
-    uvicorn app.main:app --reload --port 8000
+Local dev (run from the project root):
+    uvicorn api.index:app --reload --port 8000
+
+Vercel deploy: Vercel's Python framework preset detects the ``app`` object in
+``api/index.py`` (a supported entrypoint) and routes *every* request to it, so
+this app also serves the built Vite frontend from ``frontend/dist``. No
+``vercel.json`` builds are required; only ``SUPABASE_URL`` /
+``SUPABASE_PUBLISHABLE_KEY`` need to be set as Vercel environment variables.
 """
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import pandas as pd
 import numpy as np
 import statistics
@@ -533,4 +541,23 @@ def data_quality(location: str = Query(...)) -> dict:
     report["location"] = location
     report["metadata"] = meta
     return report
+
+
+# --- Static frontend (built SPA) -------------------------------------------
+# Vercel's Python framework preset routes *every* request to this FastAPI app,
+# so the app itself serves the built Vite frontend from frontend/dist. Mounting
+# StaticFiles at "/" (with html=True) handles the SPA and its hashed assets;
+# the /api/*, /docs and /openapi.json routes above were registered first, so
+# they take precedence over the mount.
+#
+# The frontend must be built first (`cd frontend && npm run build`). If dist is
+# absent the mount is skipped so the API-only app still boots locally.
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+if _FRONTEND_DIST.is_dir():
+    app.mount(
+        "/",
+        StaticFiles(directory=_FRONTEND_DIST, html=True),
+        name="frontend",
+    )
 

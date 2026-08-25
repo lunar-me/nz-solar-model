@@ -16,11 +16,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.engine import PanelConfig, run_simulation, summarize  # noqa: E402
-from app.loader import load_radiation_from_supabase  # noqa: E402
-from app.locations import LOCATIONS  # noqa: E402
+from api.engine import PanelConfig, run_simulation, summarize  # noqa: E402
+from api.loader import load_radiation_from_supabase  # noqa: E402
+from api.locations import LOCATIONS  # noqa: E402
 
 ALL_LOCATIONS = sorted(LOCATIONS)
 
@@ -133,7 +133,7 @@ def test_clear_sky_power_column(auckland):
 
 def test_aggregate_month_and_week(auckland):
     """Monthly and weekly buckets cover the NZ year and sum to the annual total."""
-    from app.engine import aggregate_energy
+    from api.engine import aggregate_energy
     meta = auckland.attrs["metadata"]
     # NZ-local calendar year (like the API): Jan 1 00:00 -> Jan 1 next year, exclusive.
     start = pd.Timestamp("2020-01-01", tz="Pacific/Auckland")
@@ -160,7 +160,7 @@ def test_aggregate_month_and_week(auckland):
 
 def test_data_quality_report(auckland):
     """The data-quality report flags the full dataset as internally consistent."""
-    from app.engine import data_quality_report
+    from api.engine import data_quality_report
     meta = auckland.attrs["metadata"]
     rep = data_quality_report(auckland, meta["latitude"], meta["longitude"],
                               meta["altitude"])
@@ -174,7 +174,7 @@ def test_data_quality_report(auckland):
 
 def test_cloud_index_column(auckland):
     """The engine exposes a cloud index (GHI / GHI_clear), 0 at night."""
-    from app.engine import aggregate_energy
+    from api.engine import aggregate_energy
     meta = auckland.attrs["metadata"]
     day = auckland.loc["2020-01-10 00:00":"2020-01-10 06:00"]
     result = run_simulation(day, PanelConfig(), meta["latitude"],

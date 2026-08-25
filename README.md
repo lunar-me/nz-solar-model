@@ -56,15 +56,16 @@ the Supabase column names to the internal schema
 
 ```
 data/            Legacy CAMS CSVs — reference only (the app reads Supabase)
-backend/
-  app/
-    locations.py        location registry (the "switch" keyed by name)
-    supabase_client.py  Supabase/PostgREST access (paginated, parallel fetches)
-    loader.py           Supabase → normalized, W/m², UTC-indexed DataFrame
-    engine.py           pvlib solar position / POA / idealized PV + summary
-    schemas.py          Pydantic request models
-    main.py             FastAPI app (caches each loaded dataset)
-  requirements.txt
+api/             FastAPI backend — also Vercel's Python entrypoint
+  index.py         FastAPI app (exposes `app` + serves the built SPA)
+  locations.py     location registry (the "switch" keyed by name)
+  supabase_client.py  Supabase/PostgREST access (paginated, parallel fetches)
+  loader.py        Supabase → normalized, W/m², UTC-indexed DataFrame
+  engine.py        pvlib solar position / POA / idealized PV + summary
+  schemas.py       Pydantic request models
+requirements.txt Python dependencies (used locally and on Vercel)
+vercel.json     Vercel config (minimal — the Python framework preset auto-detects)
+.python-version 3.12 (pins the Python runtime Vercel installs)
 frontend/        React (Vite) app: pick location, configure panel, view charts
 tests/           pytest suite (physics + data validation; uses Supabase)
 ```
@@ -84,9 +85,8 @@ SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
 Then:
 
 ```bash
-cd backend
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn api.index:app --reload --port 8000
 ```
 
 Open http://localhost:8000/docs for the interactive API.
@@ -100,6 +100,45 @@ npm run dev        # http://localhost:5173 (proxies /api → :8000)
 ```
 
 Production build: `npm run build` (outputs to `frontend/dist`).
+
+### Serving the frontend from the API
+
+The FastAPI app also serves the built SPA from `frontend/dist` (Vercel routes
+every request to the same function). Build it once, then the API serves the app
+at `http://localhost:8000/`:
+
+```bash
+cd frontend && npm install && npm run build
+```
+
+## Deploy to Vercel
+
+The whole app runs as **one Vercel Python Function**. Vercel's Python framework
+preset auto-detects FastAPI from the root `requirements.txt`, finds the
+entrypoint `api/index.py` (exposing `app`), and routes *every* request to it —
+so the same function serves the `/api/*` endpoints and the built frontend. No
+`vercel.json` builds are required; the minimal `vercel.json` here is a no-op.
+
+1. Build the frontend so the API can serve it:
+   `cd frontend && npm install && npm run build` (outputs to `frontend/dist`).
+2. From the project root: `vercel link`, then `vercel deploy` (or push to the
+   Git integration).
+3. In **Vercel → Project → Settings → Environment Variables** add:
+   `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` for Production / Preview /
+   Development.
+4. Open the deployment — `/api/health` returns `{"status":"ok"}`, and `/`
+   serves the SPA.
+
+Notes:
+
+- Vercel **never reads your local `.env`**. The app reads `SUPABASE_URL` /
+  `SUPABASE_PUBLISHABLE_KEY` from the environment; `python-dotenv` only loads a
+  local `.env` when present, so the same code runs locally and on Vercel.
+- Data loads are **lazy** (`lru_cache`), so importing the app never triggers a
+  Supabase request at startup — a bare `/api/health` works even if the
+  credentials are wrong (it doesn't touch Supabase).
+- `.python-version` pins Python 3.12 so the installed `pandas`/`numpy`/`pvlib`
+  wheels match your local build.
 
 ## API
 
