@@ -979,7 +979,9 @@ export default function App() {
               {moneyResult && (
                 <>
                   <div className="explain">
-                    This tab models my hourly Christchurch electricity consumption
+                    This tab models my hourly 
+                    <a className="hdr-link" href="https://nz-one-year-electricity.vercel.app/" target="_blank" rel="noopener noreferrer"
+                    title="One year: every single hour of electricity in details" aria-label="One year: every single hour of electricity in details">Christchurch electricity consumption</a> 
                     (18 Aug 2025 – 17 Aug 2026) against the hourly solar output the panel
                     on the left could produce. Each hour, the solar I'd use on-site is
                     subtracted from what I'd pay; any solar I couldn't use is counted as
