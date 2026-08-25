@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Modelling PV Energy Output in New Zealand from CAMS Radiation Data</title>
+<style>
+  :root { --ink:#1c2333; --mut:#5b6b85; --accent:#0d7a3d; --rule:#d7dce6; --bg:#f6f8fb; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: Georgia, 'Times New Roman', serif; color:var(--ink); background:var(--bg); line-height:1.6; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 20px 80px; }
+  header.paper { border-bottom: 3px double var(--rule); padding-bottom: 14px; margin-bottom: 26px; }
+  header.paper h1 { font-size: 26px; line-height:1.25; margin: 0 0 6px; }
+  .byline { color: var(--mut); font-size: 14px; }
+  h2 { font-size: 19px; margin: 34px 0 8px; color: var(--accent); border-bottom:1px solid var(--rule); padding-bottom:4px; }
+  h3 { font-size: 15px; margin: 20px 0 6px; }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 12px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code { font-family: Consolas, Menlo, monospace; background:#eef1f6; padding:1px 5px; border-radius:4px; font-size:0.9em; }
+  .formula { background:#eef3fb; border-left:3px solid var(--accent); padding:8px 14px; margin:12px 0; font-family: Consolas, Menlo, monospace; overflow-x:auto; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
+  th, td { border:1px solid var(--rule); padding:6px 9px; text-align:left; }
+  th { background:#eef1f6; }
+  .foot { margin-top:40px; color:var(--mut); font-size:12.5px; border-top:1px solid var(--rule); padding-top:12px; }
+  .tag { display:inline-block; background:#e7f0ea; color:var(--accent); border-radius:20px; padding:2px 10px; font-size:12px; font-family:Verdana, sans-serif; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="paper">
+  <h1>Modelling the Energy Output of a Fixed PV Array in New Zealand from Satellite-Derived CAMS Radiation Data</h1>
+  <div class="byline">
+    A physics-first solar-PV simulation: astronomical solar geometry, the Copernicus CAMS Radiation Service,
+    and their realisation in a Python / pvlib / FastAPI / React stack.
+  </div>
+</header>
+
+<h2>1. Abstract</h2>
+<p>
+This paper documents the mathematical model behind a location-switchable photovoltaic (PV) energy simulator for
+two New Zealand cities, <strong>Auckland</strong> (36.73&deg;&nbsp;S, 174.71&deg;&nbsp;E) and
+<strong>Christchurch</strong> (43.54&deg;&nbsp;S, 172.70&deg;&nbsp;E). The model consumes 15-minute, satellite-derived
+irradiation from the <em>CAMS Radiation Service</em> and converts it, interval by interval, into the expected
+electrical energy of a fixed, user-configured PV array. The conversion follows a well-established, physics-first
+pipeline: <strong>solar position &rarr; plane-of-array (POA) irradiance &rarr; DC/AC power &rarr; energy</strong>.
+All solar-geometry and transposition mathematics is delegated to the <em>pvlib-python</em> library rather than being
+re-implemented, so the model can be validated against published references. This document describes the raw data
+sources, the governing equations, the Python realisation, the API and frontend, and the model&rsquo;s assumptions and
+validation.</p>
+
+<h2>2. Introduction &amp; Objectives</h2>
+<p>
+A PV panel is only useful if we can predict, for a given location and orientation, how much electrical energy it
+will produce over time. The fundamental challenge is that a solar-radiation dataset (such as CAMS) reports radiation
+onto <em>specific reference planes</em> &mdash; horizontal (GHI) or perpendicular to the sun (DNI) &mdash; while the
+panel is tilted and oriented arbitrarily. The essential transformation is therefore:
+</p>
+<div class="formula">CAMS irradiance &rarr; solar position &rarr; Plane-of-Array (POA) irradiance &rarr; PV power &rarr; energy</div>
+<p>
+The model is deliberately <strong>idealised in its first version</strong>: it models the energy a panel <em>would</em>
+produce given the measured radiation, ignoring module temperature, soiling, shading, mismatch and degradation.
+These are treated as explicit, pluggable loss terms that can be added without altering the geometric core. A
+clear-sky (no-cloud) reference output is also computed so the effect of clouds can be seen at a glance.
+</p>
+
+<h2>3. Raw Data Sources</h2>
+<h3>3.1 The CAMS Radiation Service</h3>
+<p>
+The driving resource data are provided by the <strong>Copernicus Atmosphere Monitoring Service (CAMS)</strong> &mdash;
+<a href="https://ads.atmosphere.copernicus.eu/">ads.atmosphere.copernicus.eu</a>. The CAMS Radiation Service
+(v4.6, all-sky) is derived from <strong>satellite observations</strong>: visible-channel imagery from geostationary
+satellites is used, via the Heliosat method, to estimate cloud cover and thus the surface shortwave irradiance.
+Two families of fields are returned for every grid cell:
+</p>
+<ul>
+  <li><strong>All-sky</strong> values, which account for the actual observed clouds; and</li>
+  <li><strong>Clear-sky</strong> values, the radiation that would arrive in a cloud-free atmosphere.</li>
+</ul>
+<p>The exported fields are (per 15-minute interval):</p>
+<table>
+  <tr><th>Export column</th><th>Meaning</th></tr>
+  <tr><td>GHI</td><td>Global irradiation on a horizontal plane at ground level</td></tr>
+  <tr><td>BHI</td><td>Beam (direct) irradiation on a horizontal plane</td></tr>
+  <tr><td>DHI</td><td>Diffuse irradiation on a horizontal plane</td></tr>
+  <tr><td>BNI</td><td>Beam irradiation on a plane normal to the sun</td></tr>
+  <tr><td>Clear-sky GHI / BHI / DHI / BNI</td><td>the same four, for a cloud-free sky</td></tr>
+  <tr><td>Reliability</td><td>Proportion of reliable satellite data in the interval (0&ndash;1)</td></tr>
+</table>
+<p>
+The CAMS fields are <strong>irradiations</strong> (energy per unit area over the interval, in Wh/m&sup2;), not
+instantaneous irradiances (W/m&sup2;). The loader therefore divides each interval value by the interval duration in
+hours to recover the average irradiance in W/m&sup2; (see &sect;5.1). BNI is effectively the <em>direct normal
+irradiance</em> (DNI) that pvlib expects, and BHI is the direct component of the horizontal irradiance. The
+observations are tagged with the site&rsquo;s latitude, longitude and altitude in the file header, which the loader
+parses so the model is self-describing and can be switched between cities without code changes.
+</p>
+
+<h3>3.2 The Astronomical (solar-position) model</h3>
+<p>
+Independently of the satellite data, the sun&rsquo;s position in the sky at any instant is needed to project radiation
+onto a tilted panel. The model uses pvlib&rsquo;s implementation of the <strong>NREL Solar Position Algorithm (SPA)</strong>
+(Reda &amp; Andreas, 2004). Given the geographic position, the altitude, the UTC time and a small set of constants
+(air pressure, temperature, delta-T), the SPA computes, per timestamp:
+</p>
+<ul>
+  <li>solar zenith angle <em>z</em> and its apparent (refraction-corrected) value;</li>
+  <li>solar elevation &alpha; = 90&deg; &minus; z;</li>
+  <li>solar azimuth &gamma;, measured clockwise from North.</li>
+</ul>
+<p>
+The SPA is accurate to about 0.0003&deg; and is the de-facto reference used in solar engineering; using it frees the
+model from having to reproduce astronomy by hand, which was a key design decision of the project.
+</p>
+
+<h3>2.3 The two sites</h3>
+<table>
+  <tr><th>City</th><th>Latitude</th><th>Longitude</th><th>Altitude</th><th>Timezone</th></tr>
+  <tr><td>Auckland</td><td>&minus;36.7341&deg;</td><td>174.7081&deg;</td><td>51 m</td><td>Pacific/Auckland</td></tr>
+  <tr><td>Christchurch</td><td>&minus;43.5372&deg;</td><td>172.7049&deg;</td><td>8 m</td><td>Pacific/Auckland</td></tr>
+</table>
+<p>
+Both sites are in the Southern Hemisphere, so the sun&rsquo;s apparent path crosses the northern sky; a north-facing
+panel (azimuth&nbsp;0&deg;) therefore captures the most energy over the year. New Zealand observes daylight saving
+(NZST = UTC+12, NZDT = UTC+13), which the time handling must respect.
+</p>
+
+
+<h2>4. Coordinate and Time Conventions</h2>
+<ul>
+  <li><strong>Azimuth</strong> follows the meteorological convention: 0&deg; = North, 90&deg; = East, 180&deg; = South,
+      270&deg; = West.</li>
+  <li><strong>Tilt</strong> is measured from horizontal: 0&deg; = flat, 90&deg; = vertical.</li>
+  <li><strong>Timestamps</strong> are stored and processed as <strong>timezone-aware UTC</strong> datetimes, and displayed
+      in the local zone <code>Pacific/Auckland</code>. This avoids daylight-saving bugs: a naive timestamp would be
+      ambiguous across the NZST/NZDT transition.</li>
+</ul>
+
+<h2>5. Theory: From Irradiance to Electrical Energy</h2>
+
+<h3>5.1 Units: irradiation vs irradiance</h3>
+<p>
+CAMS delivers <em>irradiation</em> (Wh/m&sup2; accumulated over 15&nbsp;min). The instantaneous quantity used by the
+transposition physics is the <em>irradiance</em> (W/m&sup2;), the time-averaged power density. For an interval of
+duration &Delta;t hours,
+</p>
+<div class="formula">G[W/m&sup2;] = E[Wh/m&sup2;] / &Delta;t[h]</div>
+<p>
+with &Delta;t = 0.25&nbsp;h for the 15-minute CAMS grid. After this step, and mapping BNI&rarr;DNI, the model works
+entirely in W/m&sup2; and reconstructs energy at the end by multiplying power by &Delta;t.
+</p>
+
+<h3>5.2 Solar position</h3>
+<p>
+For every timestamp, the SPA yields the apparent solar zenith <em>z</em> and solar azimuth &gamma;. The solar
+elevation is &alpha; = 90&deg; &minus; z. These quantities are used both for the transposition and as an explicit
+guard against numerical artefacts: when &alpha; &le; 0&deg; (night), output is forced to zero.
+</p>
+
+<h3>5.3 Angle of incidence</h3>
+<p>
+For a panel with tilt &beta; and azimuth &gamma;<sub>panel</sub>, the cosine of the angle of incidence (AOI) between the
+sun&rsquo;s rays and the panel&rsquo;s normal is computed by pvlib as
+</p>
+<div class="formula">cos(AOI) = cos(z)&middot;cos(&beta;) + sin(z)&middot;sin(&beta;)&middot;cos(&gamma;<sub>panel</sub> &minus; &gamma;)</div>
+<p>
+This geometric factor governs how much of the direct (beam) radiation actually lands on the panel face.</p>
+
+<h3>5.4 Plane-of-array (POA) irradiance</h3>
+<p>
+The irradiance on the tilted panel is the sum of three physically distinct contributions:
+</p>
+<div class="formula">POA = POA_direct + POA_diffuse + POA_ground</div>
+<ul>
+  <li><strong>Direct</strong> (beam): <code>POA_direct = DNI &middot; cos(AOI)</code>.</li>
+  <li><strong>Diffuse</strong> (sky): computed from DHI and the panel geometry by a <em>transposition / sky-diffuse
+      model</em>.</li>
+  <li><strong>Ground-reflected</strong>: the fraction of global irradiance reflected by the ground onto the panel,
+      <code>POA_ground = GHI &middot; &rho; &middot; (1 &minus; cos(&beta;)) / 2</code>, where &rho; is the albedo.</li>
+</ul>
+<p>
+Three sky-diffuse transposition models are available: <strong>Perez</strong> (default; a two-term anisotropic model that
+accounts for the circumsolar and horizon brightening, using the DNI/extra-terrestrial ratio), <strong>Hay&ndash;Davies</strong>
+(an anisotropic model that weights direct-beam forward scattering), and the <strong>isotropic</strong> model, which
+assumes the diffuse sky is uniform so the diffuse factor is simply <code>(1 + cos(&beta;)) / 2</code>. The Perez model
+typically gives the closest agreement with measured tilted irradiance.
+</p>
+
+<h3>5.5 From POA to power</h3>
+<p>
+The idealised model assumes the DC power scales linearly with plane-of-array irradiance relative to Standard Test
+Conditions (STC, 1000&nbsp;W/m&sup2;), clipped at the rated power:
+</p>
+<div class="formula">P_DC = min( P_STC &middot; (POA / 1000 W/m&sup2;) , P_STC ),&nbsp; and 0 when the sun is down</div>
+<p>
+The AC power applies the inverter efficiency, assumed flat:
+</p>
+<div class="formula">P_AC = &eta;<sub>inv</sub> &middot; P_DC</div>
+<p>
+with the default &eta;<sub>inv</sub> = 0.95 (a modern string inverter, typically 95&ndash;98%). Energy over the interval is
+then <code>E = P_AC &middot; &Delta;t</code>.
+</p>
+
+<h3>5.6 No-cloud (clear-sky) reference and the ceiling</h3>
+<p>
+By re-running the same pipeline with the clear-sky components (GHI_clear, DHI_clear, DNI_clear) and the same geometry,
+the model produces an <strong>AC power (clear sky)</strong> series: the output the panel would deliver with no clouds.
+Because clouds only attenuate radiation, this reference is treated as an upper bound, and the real output is clamped so
+it never exceeds it. In the low-sun evening regime a north-facing panel can otherwise show real&nbsp;&gt;&nbsp;clear from the
+diffuse-transposition reacting to a (higher) cloudy-sky DHI, which is a known artefact that the clamp removes.
+</p>
+
+
+<h2>6. Realisation in Python</h2>
+<p>The implementation is organised into a thin data layer, a physics engine, and an HTTP API.</p>
+
+<h3>6.1 Data loader (<code>api/loader.py</code>)</h3>
+<p>
+Reads a CAMS CSV, skipping the <code>#</code>-comment header block, and parses the site latitude, longitude and
+altitude from that header. It normalises the CAMS column names to an internal schema
+(<code>ghi, dhi, dni, ghi_clear, dhi_clear, dni_clear, reliability</code>), converts Wh/m&sup2; to W/m&sup2; using
+&sect;5.1, and returns a DataFrame indexed by a timezone-aware UTC <code>DatetimeIndex</code>. The loader also records
+the interval length so energy can be reconstructed later.
+</p>
+
+<h3>6.2 The engine (<code>api/engine.py</code>)</h3>
+<p>
+A single function, <code>run_simulation</code>, implements &sect;5 in a few vectorised steps using pvlib:
+</p>
+<ol>
+  <li><code>solarposition.get_solarposition</code> &rarr; zenith, elevation, azimuth;</li>
+  <li><code>irradiance.aoi</code> &rarr; angle of incidence;</li>
+  <li><code>irradiance.get_total_irradiance</code> &rarr; POA (direct + diffuse + ground), for both all-sky and clear-sky
+      inputs, using the configured transposition model and albedo;</li>
+  <li>linear POA &rarr; DC power with rated-power clipping and night guards (&alpha; &le; 0 or GHI &le; 0 &rArr; 0);</li>
+  <li>inverter efficiency &rarr; AC power; energy = AC &middot; &Delta;t;</li>
+  <li>clamp real output to the clear-sky ceiling (&sect;5.6).</li>
+</ol>
+<p>
+The engine returns a full per-interval DataFrame (UTC timestamp, NZ-local timestamp, sun elevation/azimuth, AOI,
+GHI/DHI/DNI, all POA components, DC/AC power, clear-sky AC power, and energy), plus a small summary (total kWh, peak,
+specific yield, mean AC power, and the no-cloud total).
+</p>
+
+<h3>6.3 The API (<code>api/index.py</code>)</h3>
+<p>
+A <strong>FastAPI</strong> application exposes the model over HTTP. Each site&rsquo;s dataset is cached in memory after first
+load (an <code>lru_cache</code> keyed by location). Endpoints:
+</p>
+<table>
+  <tr><th>Endpoint</th><th>Purpose</th></tr>
+  <tr><td><code>GET /api/health</code></td><td>health check</td></tr>
+  <tr><td><code>GET /api/locations</code></td><td>the two switchable cities + metadata</td></tr>
+  <tr><td><code>GET /api/radiation/{location}</code></td><td>normalised radiation, optional date slice</td></tr>
+  <tr><td><code>POST /api/simulate</code></td><td>run the model; body = location + panel config + date range</td></tr>
+</table>
+<p>
+Panel configuration (tilt, azimuth, rated kWp, albedo, transposition model, inverter efficiency) is validated by
+<strong>Pydantic</strong> models. CORS is enabled so the browser frontend can call the API.
+</p>
+
+<h3>6.4 The frontend (React)</h3>
+<p>
+A React (Vite) application lets a user pick the location, tune the panel (with a live compass for azimuth), choose a
+date range, and view three charts (PV output with the no-cloud reference, irradiance components, and sun geometry)
+plus compact report cards (total, no-cloud, peak, yield, mean AC). The frontend performs <em>no</em> science: it only
+requests results from the API and plots them, which keeps the model reproducible.
+</p>
+
+
+<h2>7. Assumptions and Limitations</h2>
+<ul>
+  <li><strong>Idealised conversion</strong>: no module temperature, soiling, mismatch, shading, degradation, or wiring
+      losses. Real systems therefore produce somewhat less than the ideal DC model predicts.</li>
+  <li><strong>Flat inverter efficiency</strong>: a single scalar is used; real inverters are less efficient at partial
+      load.</li>
+  <li><strong>Fixed, unshaded panel</strong>: no tracking and no shading from the surrounding terrain or buildings.</li>
+  <li><strong>Satellite resolution</strong>: CAMS irradiance is derived from satellite cloud retrievals; it is
+      representative of the satellite pixel, not an on-site pyranometer.</li>
+  <li><strong>No irradiation persistence</strong>: each 15-minute interval is treated independently.</li>
+</ul>
+<p>These are explicit design choices (per the project brief) that make the model debuggable first, with each effect
+added as a transparent configuration parameter later.</p>
+
+<h2>8. Validation and Testing</h2>
+<p>
+The model is tested against internal consistency and known physical limits:
+</p>
+<ul>
+  <li><strong>Energy conservation</strong>: in the raw CAMS data, GHI = BHI + DHI holds to within numerical rounding
+      (mean residual &asymp; 0.0000 Wh/m&sup2;).</li>
+  <li><strong>Night</strong>: output is exactly zero at NZ-local midnight.</li>
+  <li><strong>Seasonality</strong>: summer (December) energy exceeds winter (June) for a fixed panel in the Southern
+      Hemisphere.</li>
+  <li><strong>Geometry</strong>: a flat panel (tilt&nbsp;0&deg;) yields POA &asymp; GHI on a bright day.</li>
+  <li><strong>Linearity</strong>: DC power = P_STC &middot; (POA/1000) with rated-power clipping.</li>
+  <li><strong>Clear-sky ceiling</strong>: the real AC power never exceeds the clear-sky AC power (after &sect;5.6).</li>
+</ul>
+
+<h2>9. References</h2>
+<ol>
+  <li>Copernicus Atmosphere Monitoring Service (CAMS), <em>Radiation Service</em>,
+      <a href="https://ads.atmosphere.copernicus.eu/">https://ads.atmosphere.copernicus.eu/</a>; Vaisala / MINES ParisTech / DLR.</li>
+  <li>Reda, I. &amp; Andreas, A. (2004), <em>Solar position algorithm for solar radiation applications</em>, Solar Energy 76(5).</li>
+  <li>Perez, R. et al. (1990), <em>Modelling daylight availability and irradiance components from direct and global irradiance</em>.</li>
+  <li>Hay, J. E. &amp; Davies, J. A. (1980), <em>Calculation of the solar radiation incident on an inclined surface</em>.</li>
+  <li>Holmgren, W. et al., <em>pvlib python: a Python package for modeling solar energy systems</em>, JOSS.</li>
+</ol>
+
+<div class="foot">
+  Source data: CAMS Radiation Service v4.6 (all-sky), 15-minute, 2020-01-01 &ndash; 2025-12-31, for Auckland and Christchurch.
+  Model core: <code>pvlib-python</code> + <code>pandas</code> + <code>numpy</code>; API: <code>FastAPI</code>; UI: <code>React</code>.
+</div>
+
+</div>
+</body>
+</html>
+
