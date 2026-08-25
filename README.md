@@ -5,7 +5,7 @@ A physics-first, idealized PV output model built on **pvlib-python**, driven by
 **Christchurch**), exposed through a **FastAPI** backend and a small **React**
 frontend for choosing a location, configuring a panel, and viewing the results.
 
-Implements the plan in [`idea.md`](idea.md): CAMS irradiance → solar position →
+Implements the plan: CAMS irradiance → solar position →
 angle of incidence → Plane-of-Array (POA) irradiance → idealized DC/AC power →
 15-minute energy, using established pvlib algorithms rather than hand-written
 astronomy.
@@ -25,18 +25,18 @@ since the Supabase table stores irradiance but not coordinates), panel
 tilt/azimuth, rated power (kWp), albedo, transposition model, inverter
 efficiency.
 
-This v1 is **idealized** by design (idea.md §9, §29): no module-temperature,
+This v1 is **idealized** by design: no module-temperature,
 no soiling/mismatch/shading/degradation losses. Each of those is an explicit
 configuration knob to be added later without touching the core geometry.
 
-## Coordinate conventions (idea.md §3)
+## Coordinate conventions
 
 - **Azimuth**: 0° = N, 90° = E, 180° = S, 270° = W (meteorological convention).
 - **Tilt**: 0° = horizontal, 90° = vertical.
 - Default for NZ is a north-ish facing tilt of 25°, but a south-facing roof is
   `azimuth=180`.
 
-## Time handling (idea.md §4)
+## Time handling
 
 Both Supabase tables store datetimes in **UTC** (`cams_radiation.start_ts_utc`,
 `christchurch_electricity_consumption.datetime_utc`). The loader keeps a
@@ -50,7 +50,7 @@ The Supabase `cams_radiation` table already stores average irradiances in
 **W/m²** (not Wh/m² per interval), so the loader passes them straight to pvlib
 and energy is re-computed as `power_W × interval_hours`. The loader normalizes
 the Supabase column names to the internal schema
-(`ghi / dhi / dni / *_clear / reliability`) per idea.md §13.
+(`ghi / dhi / dni / *_clear / reliability`).
 
 ## Repository layout
 
