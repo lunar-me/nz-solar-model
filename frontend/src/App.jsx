@@ -516,7 +516,6 @@ export default function App() {
       <div className="tabs">
         <button className={activeTab === 'daily' ? 'tab active' : 'tab'} onClick={() => switchTab('daily')}>Daily</button>
         <button className={activeTab === 'year' ? 'tab active' : 'tab'} onClick={() => switchTab('year')}>Year</button>
-        <button className={activeTab === 'stability' ? 'tab active' : 'tab'} onClick={() => switchTab('stability')}>Stability</button>
         <button className={activeTab === 'money' ? 'tab active' : 'tab'} onClick={() => switchTab('money')}>$ My money</button>
         <button className={activeTab === 'dataq' ? 'tab active' : 'tab'} onClick={() => switchTab('dataq')}>Data quality</button>
       </div>
