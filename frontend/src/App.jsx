@@ -248,6 +248,69 @@ function EnergyLegend({ payload }) {
   );
 }
 
+// Custom tooltip so the transparent "Solar wasted" bar's value is still visible
+// (recharts renders the value text in the bar fill color, which is transparent).
+function MoneyEnergyTooltip({ active, payload, label }) {
+  if (!active || !payload || !payload.length) return null;
+  const colors = {
+    'Consumption': '#e2431e',
+    'Grid import': '#1e88e5',
+    'Solar used': '#4caf50',
+    'Solar wasted': '#9ccc65',
+  };
+  return (
+    <div style={{ background: '#fff', border: '1px solid #ccc', borderRadius: 6, padding: '8px 10px', fontSize: 13, boxShadow: '0 2px 6px rgba(0,0,0,0.15)' }}>
+      <div style={{ fontWeight: 600, marginBottom: 4, color: '#222' }}>{label}</div>
+      {payload.map((entry) => (
+        <div key={entry.dataKey} style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#222', lineHeight: 1.6 }}>
+          <span style={{ width: 10, height: 10, borderRadius: 2, background: colors[entry.name] || entry.color || entry.stroke, flex: '0 0 auto' }} />
+          <span>{entry.name}:</span>
+          <b>{Math.round(Number(entry.value))} kWh</b>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Custom legend for the cost chart, matching the energy chart's legend style.
+function CostLegend({ payload }) {
+  const colors = {
+    'Without solar ($)': '#fbc02d',
+    'With solar ($)': '#4caf50',
+  };
+  return (
+    <div className="chart-legend">
+      {payload.map((entry, i) => (
+        <span key={i} className="legend-item">
+          <span className="legend-swatch" style={{ background: colors[entry.value] || entry.color }} />
+          {entry.value}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// Custom tooltip for the cost chart, matching the energy chart's tooltip style.
+function MoneyCostTooltip({ active, payload, label }) {
+  if (!active || !payload || !payload.length) return null;
+  const colors = {
+    'Without solar ($)': '#fbc02d',
+    'With solar ($)': '#4caf50',
+  };
+  return (
+    <div style={{ background: '#fff', border: '1px solid #ccc', borderRadius: 6, padding: '8px 10px', fontSize: 13, boxShadow: '0 2px 6px rgba(0,0,0,0.15)' }}>
+      <div style={{ fontWeight: 600, marginBottom: 4, color: '#222' }}>{label}</div>
+      {payload.map((entry) => (
+        <div key={entry.dataKey} style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#222', lineHeight: 1.6 }}>
+          <span style={{ width: 10, height: 10, borderRadius: 2, background: colors[entry.name] || entry.color || entry.stroke, flex: '0 0 auto' }} />
+          <span>{entry.name}:</span>
+          <b>${Math.round(Number(entry.value))}</b>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [locations, setLocations] = useState([]);
   const [location, setLocation] = useState('auckland');
@@ -308,7 +371,7 @@ export default function App() {
     }
   }, [location, panel, startDate, days]);
 
-  useEffect(() => { run(); }, [run]);
+  useEffect(() => { if (activeTab === 'daily') run(); }, [run, activeTab]);
 
   const runYear = useCallback(async () => {
     setAggLoading(true);
@@ -325,7 +388,7 @@ export default function App() {
     }
   }, [location, panel, year, aggPeriod]);
 
-  useEffect(() => { runYear(); }, [runYear]);
+  useEffect(() => { if (activeTab === 'year') runYear(); }, [runYear, activeTab]);
 
   const runStability = useCallback(async () => {
     setStabLoading(true);
@@ -340,7 +403,7 @@ export default function App() {
     }
   }, [location, panel]);
 
-  useEffect(() => { runStability(); }, [runStability]);
+  useEffect(() => { if (activeTab === 'stability') runStability(); }, [runStability, activeTab]);
 
   const runMoney = useCallback(async () => {
     setMoneyLoading(true);
@@ -355,7 +418,7 @@ export default function App() {
     }
   }, [panel]);
 
-  useEffect(() => { runMoney(); }, [runMoney]);
+  useEffect(() => { if (activeTab === 'money') runMoney(); }, [runMoney, activeTab]);
 
   const runDataQuality = useCallback(async () => {
     setDqLoading(true);
@@ -370,7 +433,18 @@ export default function App() {
     }
   }, [location]);
 
-  useEffect(() => { runDataQuality(); }, [runDataQuality]);
+  useEffect(() => { if (activeTab === 'dataq') runDataQuality(); }, [runDataQuality, activeTab]);
+
+  // Tab switching: "My money" is locked to Christchurch; leaving it reverts to
+  // the default location (Auckland). Other tabs keep whatever the user picked.
+  const switchTab = (tab) => {
+    if (tab === 'money') {
+      setLocation('christchurch');
+    } else if (activeTab === 'money') {
+      setLocation('auckland');
+    }
+    setActiveTab(tab);
+  };
 
   const meta = locations.find((l) => l.key === location);
   const timeseries = useMemo(() => result?.timeseries ?? [], [result]);
@@ -427,11 +501,11 @@ export default function App() {
         </div>
       </header>
       <div className="tabs">
-        <button className={activeTab === 'daily' ? 'tab active' : 'tab'} onClick={() => setActiveTab('daily')}>Daily</button>
-        <button className={activeTab === 'year' ? 'tab active' : 'tab'} onClick={() => setActiveTab('year')}>Year</button>
-        <button className={activeTab === 'stability' ? 'tab active' : 'tab'} onClick={() => setActiveTab('stability')}>Stability</button>
-        <button className={activeTab === 'money' ? 'tab active' : 'tab'} onClick={() => { setLocation('christchurch'); setActiveTab('money'); }}>$ My money</button>
-        <button className={activeTab === 'dataq' ? 'tab active' : 'tab'} onClick={() => setActiveTab('dataq')}>Data quality</button>
+        <button className={activeTab === 'daily' ? 'tab active' : 'tab'} onClick={() => switchTab('daily')}>Daily</button>
+        <button className={activeTab === 'year' ? 'tab active' : 'tab'} onClick={() => switchTab('year')}>Year</button>
+        <button className={activeTab === 'stability' ? 'tab active' : 'tab'} onClick={() => switchTab('stability')}>Stability</button>
+        <button className={activeTab === 'money' ? 'tab active' : 'tab'} onClick={() => switchTab('money')}>$ My money</button>
+        <button className={activeTab === 'dataq' ? 'tab active' : 'tab'} onClick={() => switchTab('dataq')}>Data quality</button>
       </div>
       <div className="layout">
         <aside className="controls">
@@ -555,7 +629,7 @@ export default function App() {
           {error && <div className="error">{error}</div>}
 
           {!result && !error && (
-            <p className="hint">Choose a location and press “Run simulation”.</p>
+            <p className="hint">Loading... please wait</p>
           )}
 
           {result && (
@@ -679,7 +753,7 @@ export default function App() {
             <>
               {aggError && <div className="error">{aggError}</div>}
               {!aggResult && !aggError && (
-                <p className="hint">Select a year and press "Run".</p>
+                <p className="hint">Loading... please wait</p>
               )}
               {aggResult && (
                 <>
@@ -814,7 +888,7 @@ export default function App() {
             <>
               {stabError && <div className="error">{stabError}</div>}
               {!stabResult && !stabError && (
-                <p className="hint">Loading yearly stability…</p>
+                <p className="hint">Loading... please wait</p>
               )}
               {stabResult && (
                 <>
@@ -888,7 +962,7 @@ export default function App() {
           {activeTab === 'money' && (
             <>
               {moneyError && <div className="error">{moneyError}</div>}
-              {!moneyResult && !moneyError && (<p className="hint">Loading…</p>)}
+              {!moneyResult && !moneyError && (<p className="hint">Loading... please wait</p>)}
               {moneyResult && (
                 <>
                   <div className="explain">
@@ -925,7 +999,7 @@ export default function App() {
                           <CartesianGrid vertical={false} strokeDasharray="3 3" />
                           <XAxis dataKey="label" interval={0} tickFormatter={(v) => v.slice(0, 3)} />
                           <YAxis />
-                          <Tooltip formatter={(value, name) => [value, name]} labelStyle={{ color: '#222' }} />
+                          <Tooltip content={<MoneyEnergyTooltip />} />
                           <Legend content={EnergyLegend} />
                           <Bar dataKey="consumption_kwh" name="Consumption" fill="#e2431e" radius={[2, 2, 0, 0]} />
                           <Bar dataKey="grid_kwh" name="Grid import" fill="#1e88e5" radius={[2, 2, 0, 0]} />
@@ -944,8 +1018,8 @@ export default function App() {
                           <CartesianGrid vertical={false} strokeDasharray="3 3" />
                           <XAxis dataKey="label" interval={0} tickFormatter={(v) => v.slice(0, 3)} />
                           <YAxis />
-                          <Tooltip formatter={(value, name) => [`$${value}`, name]} labelStyle={{ color: '#222' }} />
-                          <Legend />
+                          <Tooltip content={<MoneyCostTooltip />} />
+                          <Legend content={CostLegend} />
                           <Bar dataKey="cost_without" name="Without solar ($)" fill="#fbc02d" radius={[2, 2, 0, 0]}>
                             <LabelList dataKey="cost_without" position="top" formatter={(v) => `$${Math.round(v)}`} />
                           </Bar>
@@ -1014,7 +1088,7 @@ export default function App() {
           {activeTab === 'dataq' && (
             <>
               {dqError && <div className="error">{dqError}</div>}
-              {!dqResult && !dqError && (<p className="hint">Loading…</p>)}
+              {!dqResult && !dqError && (<p className="hint">Loading... please wait</p>)}
               {dqResult && (
                 <>
                   <div className="explain">

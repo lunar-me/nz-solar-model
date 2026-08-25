@@ -16,3 +16,15 @@ frontend/dist/
 Thumbs.db
 idea.md
 .pytest_cache/
+
+.env
+
+# Runtime / audit logs
+supabase_requests.log
+_vite.log
+_uvicorn.log
+*.log
+
+# Large reference CAMS CSVs (the app reads Supabase; these are reference only)
+data/CAMS Radiation - Auckland - 20200101 - 20260824.csv
+data/CAMS Radiation - Christchurch - 20200101 - 20260824.csv

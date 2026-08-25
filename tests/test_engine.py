@@ -1,4 +1,8 @@
-"""Unit tests for the PV engine + CAMS loader.
+"""Unit tests for the PV engine + Supabase loaders.
+
+The engine is tested against real radiation data pulled from Supabase, so these
+tests require network access and valid credentials in ``.env`` (SUPABASE_URL /
+SUPABASE_PUBLISHABLE_KEY).
 
 Run from the repo root:
     python -m pytest tests -q
@@ -15,16 +19,16 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
 from app.engine import PanelConfig, run_simulation, summarize  # noqa: E402
-from app.loader import load_radiation  # noqa: E402
-from app.locations import LOCATIONS, get_location  # noqa: E402
+from app.loader import load_radiation_from_supabase  # noqa: E402
+from app.locations import LOCATIONS  # noqa: E402
 
 ALL_LOCATIONS = sorted(LOCATIONS)
 
 
 @pytest.fixture(scope="module")
 def radiation() -> dict:
-    """Load each location exactly once and cache by key."""
-    return {key: load_radiation(get_location(key).file) for key in ALL_LOCATIONS}
+    """Load each location exactly once from Supabase and cache by key."""
+    return {key: load_radiation_from_supabase(key) for key in ALL_LOCATIONS}
 
 
 @pytest.fixture(scope="module")
@@ -108,11 +112,11 @@ def test_summary_shape(auckland):
 
 
 def test_locations_switch_registry():
-    """The two CAMS files map to distinct locations with distinct coords."""
-    from app.locations import get_location
-    ak = load_radiation(get_location("auckland").file)
-    ch = load_radiation(get_location("christchurch").file)
+    """The two locations map to distinct coordinates via Supabase."""
+    ak = load_radiation_from_supabase("auckland")
+    ch = load_radiation_from_supabase("christchurch")
     assert ak.attrs["metadata"]["latitude"] != ch.attrs["metadata"]["latitude"]
+    assert ak.attrs["metadata"]["longitude"] != ch.attrs["metadata"]["longitude"]
 
 
 def test_clear_sky_power_column(auckland):

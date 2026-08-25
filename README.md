@@ -20,7 +20,8 @@ GHI, DHI, DNI, POA_direct, POA_diffuse, POA_ground, POA_global,
 DC power (W), AC power (W), energy (Wh)
 ```
 
-Inputs: location (lat/lon/altitude read from the CAMS file header), panel
+Inputs: location (lat/longitude/altitude pinned per location in `locations.py`,
+since the Supabase table stores irradiance but not coordinates), panel
 tilt/azimuth, rated power (kWp), albedo, transposition model, inverter
 efficiency.
 
@@ -37,39 +38,50 @@ configuration knob to be added later without touching the core geometry.
 
 ## Time handling (idea.md §4)
 
-CAMS exports timestamps in **UTC**. The loader keeps a timezone-aware UTC
-`DatetimeIndex`; pvlib solar position is computed on those UTC stamps. The
-frontend displays them converted to **Pacific/Auckland** local time (handles
-NZST/NZDT automatically). No naive datetimes are used internally.
+Both Supabase tables store datetimes in **UTC** (`cams_radiation.start_ts_utc`,
+`christchurch_electricity_consumption.datetime_utc`). The loader keeps a
+timezone-aware UTC `DatetimeIndex`; pvlib solar position is computed on those
+UTC stamps. The frontend displays them converted to **Pacific/Auckland** local
+time (handles NZST/NZDT automatically). No naive datetimes are used internally.
 
 ## Units note (important)
 
-CAMS exports **irradiations** (Wh/m²) integrated over each 15-minute interval,
-not instantaneous irradiances. The loader converts each interval to an average
-**irradiance in W/m²** (divide by the interval length in hours) so pvlib gets
-what it expects, then energy is re-computed as `power_W × interval_hours`.
-The loader also normalizes CAMS names to the internal schema
+The Supabase `cams_radiation` table already stores average irradiances in
+**W/m²** (not Wh/m² per interval), so the loader passes them straight to pvlib
+and energy is re-computed as `power_W × interval_hours`. The loader normalizes
+the Supabase column names to the internal schema
 (`ghi / dhi / dni / *_clear / reliability`) per idea.md §13.
 
 ## Repository layout
 
 ```
-data/            CAMS radiation CSVs (Auckland, Christchurch) — unchanged
+data/            Legacy CAMS CSVs — reference only (the app reads Supabase)
 backend/
   app/
-    locations.py  location registry (the "switch" keyed by name)
-    loader.py     CAMS CSV → normalized, W/m², UTC-indexed DataFrame
-    engine.py     pvlib solar position / POA / idealized PV + summary
-    schemas.py    Pydantic request models
-    main.py       FastAPI app (caches each loaded dataset)
+    locations.py        location registry (the "switch" keyed by name)
+    supabase_client.py  Supabase/PostgREST access (paginated, parallel fetches)
+    loader.py           Supabase → normalized, W/m², UTC-indexed DataFrame
+    engine.py           pvlib solar position / POA / idealized PV + summary
+    schemas.py          Pydantic request models
+    main.py             FastAPI app (caches each loaded dataset)
   requirements.txt
 frontend/        React (Vite) app: pick location, configure panel, view charts
-tests/           pytest suite (physics + data validation)
+tests/           pytest suite (physics + data validation; uses Supabase)
 ```
 
 ## Run it
 
 ### Backend (FastAPI)
+
+The backend reads all data from **Supabase**. Create a `.env` in the repo root
+with your publishable key (already gitignored):
+
+```
+SUPABASE_URL=<project>.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+```
+
+Then:
 
 ```bash
 cd backend

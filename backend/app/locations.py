@@ -1,16 +1,14 @@
-"""Location registry.
+"""Location registry (Supabase-only).
 
-Each entry maps a short key to the local CAMS CSV for that location.  The
-authoritative coordinates/altitude are parsed from the file header itself by
-the loader (self-describing data), but the registry is what lets the UI and API
-"switch between locations" by name.
+Each entry maps a short API key to a location's metadata (display name, region,
+coordinates/altitude, and the ``location`` value used in the Supabase
+``cams_radiation`` table).  The CAMS ``.csv`` files that once fed the model are
+legacy / reference only — the app reads radiation and electricity exclusively
+from Supabase.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
 
 @dataclass(frozen=True)
@@ -18,7 +16,13 @@ class Location:
     key: str
     name: str
     region: str
-    file: Path
+    # Value of the `location` column in the Supabase cams_radiation table.
+    supabase_name: str = ""
+    # Coordinates/altitude are not stored in the Supabase table, so they are
+    # pinned here (they match the CAMS CSV headers for each location).
+    latitude: float = 0.0
+    longitude: float = 0.0
+    altitude: float = 0.0
 
 
 LOCATIONS: dict[str, Location] = {
@@ -26,13 +30,19 @@ LOCATIONS: dict[str, Location] = {
         key="auckland",
         name="Auckland",
         region="North Island",
-        file=DATA_DIR / "CAMS Radiation - Auckland - 20200101 - 20251231.csv",
+        supabase_name="Auckland",
+        latitude=-36.7341,
+        longitude=174.7081,
+        altitude=51.00,
     ),
     "christchurch": Location(
         key="christchurch",
         name="Christchurch",
         region="South Island",
-        file=DATA_DIR / "CAMS Radiation - Christchurch - 20200101 - 20251231.csv",
+        supabase_name="Christchurch",
+        latitude=-43.5372,
+        longitude=172.7049,
+        altitude=8.00,
     ),
 }
 

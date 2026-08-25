@@ -15,8 +15,9 @@ import statistics
 
 from .engine import (PanelConfig, run_simulation, summarize, aggregate_energy,
                      data_quality_report)
-from .loader import load_radiation, load_electricity
-from .locations import LOCATIONS, get_location, DATA_DIR
+from .loader import (load_radiation_from_supabase, load_electricity_from_supabase,
+                     _utc_iso)
+from .locations import LOCATIONS
 from .schemas import (AggregateRequest, SimulateRequest, StabilityRequest,
                       MoneyRequest)
 
@@ -38,8 +39,30 @@ app.add_middleware(
 
 @lru_cache(maxsize=len(LOCATIONS))
 def _cached_radiation(location_key: str) -> pd.DataFrame:
-    loc = get_location(location_key)
-    return load_radiation(loc.file)
+    return load_radiation_from_supabase(location_key)
+
+
+@lru_cache(maxsize=64)
+def _cached_range_radiation(location: str, start_iso: str | None,
+                            end_iso: str | None) -> pd.DataFrame:
+    """Radiation for a (location, start, end) range, cached.
+
+    Radiation depends only on *location + date range* — not on panel settings.
+    Caching it means changing tilt/azimuth/inverter efficiency re-runs the
+    simulation but does NOT refetch Supabase.
+    """
+    return load_radiation_from_supabase(location, start=start_iso, end=end_iso)
+
+
+def _range_radiation(location: str, start, end) -> pd.DataFrame:
+    """Range-limited radiation fetch, normalised to UTC-ISO keys for caching."""
+    return _cached_range_radiation(location, _utc_iso(start), _utc_iso(end))
+
+
+@lru_cache(maxsize=1)
+def _cached_electricity() -> pd.DataFrame:
+    """Hourly Christchurch consumption, fetched once and reused (panel-independent)."""
+    return load_electricity_from_supabase()
 
 
 @lru_cache(maxsize=len(LOCATIONS))
@@ -50,6 +73,19 @@ def _cached_radiation_hourly(location_key: str) -> pd.DataFrame:
     ~3.5x faster because plane-of-array is computed over 4x fewer intervals.
     """
     rad = _cached_radiation(location_key)
+    hourly = rad.resample("1h").mean()
+    hourly.attrs["interval_h"] = 1.0
+    hourly.attrs["metadata"] = rad.attrs.get("metadata", {})
+    return hourly
+
+
+def _hourly_radiation(location_key: str, start=None, end=None) -> pd.DataFrame:
+    """Fetch a UTC date range from Supabase and resample to hourly.
+
+    Only the requested slice is pulled (PostgREST ``start_ts_utc`` filters),
+    so /api/aggregate does not download the whole multi-year dataset.
+    """
+    rad = _range_radiation(location_key, start, end)
     hourly = rad.resample("1h").mean()
     hourly.attrs["interval_h"] = 1.0
     hourly.attrs["metadata"] = rad.attrs.get("metadata", {})
@@ -76,10 +112,19 @@ def health() -> dict:
 
 
 def _cached_meta(key: str) -> dict:
-    try:
-        return _cached_radiation(key).attrs.get("metadata", {})
-    except Exception:
+    """Location metadata from the registry (no Supabase / dataset fetch).
+
+    The coordinates are pinned in ``locations.py``; reading them must not pull
+    the entire multi-year radiation dataset just to answer ``/api/locations``.
+    """
+    loc = LOCATIONS.get(key)
+    if loc is None:
         return {}
+    return {
+        "latitude": loc.latitude,
+        "longitude": loc.longitude,
+        "altitude": loc.altitude,
+    }
 
 
 @app.get("/api/locations")
@@ -105,7 +150,7 @@ def get_radiation(
     """Return normalised radiation (W/m2) for a location, optionally a date slice."""
     if location not in LOCATIONS:
         raise HTTPException(404, detail=f"Unknown location '{location}'")
-    df = _slice(_cached_radiation(location), start, end)
+    df = _range_radiation(location, start, end)
     if len(df) > limit:
         step = max(len(df) // limit, 1)
         df = df.iloc[::step]
@@ -129,7 +174,7 @@ def simulate(req: SimulateRequest) -> dict:
     if req.location not in LOCATIONS:
         raise HTTPException(404, detail=f"Unknown location '{req.location}'")
 
-    radiation = _slice(_cached_radiation(req.location), req.start, req.end)
+    radiation = _range_radiation(req.location, req.start, req.end)
     if radiation.empty:
         raise HTTPException(400, detail="No data in the requested date range.")
 
@@ -181,8 +226,7 @@ def aggregate(req: AggregateRequest) -> dict:
     from datetime import date, timedelta
 
     AK = "Pacific/Auckland"
-    radiation = _cached_radiation_hourly(req.location)
-    meta = radiation.attrs.get("metadata", {})
+    meta = _cached_meta(req.location)
     panel = PanelConfig(
         tilt=req.panel.tilt,
         azimuth=req.panel.azimuth,
@@ -192,23 +236,37 @@ def aggregate(req: AggregateRequest) -> dict:
         inverter_efficiency=req.panel.inverter_efficiency,
     )
 
+    # Determine the exact UTC range we need, then fetch ONLY that slice rather
+    # than the entire multi-year dataset.
     if req.period == "week":
-        # Slice over the FULL ISO weeks (Mon..Sun) intersecting the year, so
-        # every weekly bar is a complete week rather than a partial Jan-1 cut.
+        # Full ISO weeks (Mon..Sun) intersecting the year, so every weekly bar
+        # is a complete week rather than a partial Jan-1 cut.
         first_mon = date.fromisocalendar(req.year, 1, 1)
         last_iso = date(req.year, 12, 31).isocalendar()
         last_mon = date.fromisocalendar(last_iso[0], last_iso[1], 1)
         last_sun = last_mon + timedelta(days=6)
         start = pd.Timestamp(first_mon, tz=AK)
         end = pd.Timestamp(last_sun + timedelta(days=1), tz=AK)
-        rad = radiation.loc[start.tz_convert("UTC"):end.tz_convert("UTC")]
-        rad = rad[rad.index < end.tz_convert("UTC")]
-        result = run_simulation(
-            rad, panel=panel,
-            latitude=meta.get("latitude", 0.0),
-            longitude=meta.get("longitude", 0.0),
-            altitude=meta.get("altitude", 0.0),
-        )
+    else:
+        start = pd.Timestamp(f"{req.year}-01-01", tz=AK)
+        end = pd.Timestamp(f"{req.year + 1}-01-01", tz=AK)
+
+    radiation = _hourly_radiation(
+        req.location, start=start.tz_convert("UTC"), end=end.tz_convert("UTC"))
+
+    rad = radiation.loc[start.tz_convert("UTC"):end.tz_convert("UTC")]
+    rad = rad[rad.index < end.tz_convert("UTC")]
+    if rad.empty:
+        raise HTTPException(400, detail=f"No data for year {req.year}.")
+
+    result = run_simulation(
+        rad, panel=panel,
+        latitude=meta.get("latitude", 0.0),
+        longitude=meta.get("longitude", 0.0),
+        altitude=meta.get("altitude", 0.0),
+    )
+
+    if req.period == "week":
         # Annual summary stays the exact calendar year (Jan 1 -> Jan 1).
         cs = pd.Timestamp(f"{req.year}-01-01", tz=AK)
         ce = pd.Timestamp(f"{req.year + 1}-01-01", tz=AK)
@@ -219,18 +277,6 @@ def aggregate(req: AggregateRequest) -> dict:
         summary = summarize(cal, panel.rated_power_kwp)
         buckets = aggregate_energy(result, "week")
     else:
-        start = pd.Timestamp(f"{req.year}-01-01", tz=AK)
-        end = pd.Timestamp(f"{req.year + 1}-01-01", tz=AK)
-        rad = radiation.loc[start.tz_convert("UTC"):end.tz_convert("UTC")]
-        rad = rad[rad.index < end.tz_convert("UTC")]
-        if rad.empty:
-            raise HTTPException(400, detail=f"No data for year {req.year}.")
-        result = run_simulation(
-            rad, panel=panel,
-            latitude=meta.get("latitude", 0.0),
-            longitude=meta.get("longitude", 0.0),
-            altitude=meta.get("altitude", 0.0),
-        )
         summary = summarize(result, panel.rated_power_kwp)
         buckets = aggregate_energy(result, "month")
 
@@ -332,15 +378,19 @@ def stability(req: StabilityRequest) -> dict:
 
 
 @lru_cache(maxsize=1)
-def _christchurch_hourly_radiation() -> pd.DataFrame:
-    """Combined 1-hour Christchurch radiation (2020-2025 + 2026 files)."""
-    f1 = DATA_DIR / "CAMS Radiation - 1h - Christchurch - 20200101 - 20251231.csv"
-    f2 = DATA_DIR / "CAMS Radiation - 1h - Christchurch - 20260101 - 20260823.csv"
-    rads = [load_radiation(f1), load_radiation(f2)]
-    rad = pd.concat(rads).sort_index()
-    rad = rad[~rad.index.duplicated(keep="first")]
-    rad.attrs["interval_h"] = 1.0
-    return rad
+def _christchurch_hourly_radiation(start=None, end=None) -> pd.DataFrame:
+    """Hourly Christchurch radiation from Supabase (15-min data resampled).
+
+    The Supabase ``cams_radiation`` table is 15-minute; resample to hourly so
+    the money tab aligns with the hourly electricity consumption.  ``start`` /
+    ``end`` restrict the Supabase fetch to the needed range (the money tab only
+    needs the electricity year, not the whole 2020-2026 dataset).
+    """
+    rad = _range_radiation("christchurch", start, end)
+    hourly = rad.resample("1h").mean()
+    hourly.attrs["interval_h"] = 1.0
+    hourly.attrs["metadata"] = rad.attrs.get("metadata", {})
+    return hourly
 
 
 @app.post("/api/money")
@@ -349,8 +399,23 @@ def money(req: MoneyRequest) -> dict:
     if req.location != "christchurch":
         raise HTTPException(400, detail="'My money' tab is locked to Christchurch.")
 
-    el = load_electricity()  # hourly consumption (kWh) + cost ($), UTC index
-    meta = _christchurch_hourly_radiation().attrs.get("metadata", {})
+    el = _cached_electricity()  # hourly consumption (kWh) + cost ($), UTC index (cached)
+    if el.empty:
+        raise HTTPException(
+            400, detail="No Christchurch electricity consumption data available."
+        )
+
+    # Fetch Christchurch radiation only across the electricity year (UTC range),
+    # rather than the entire 2020-2026 dataset, to keep memory + load time small.
+    start = el.index.min()
+    end = el.index.max()
+    rad = _christchurch_hourly_radiation(start=start, end=end)
+    if rad.empty:
+        raise HTTPException(
+            400,
+            detail="No radiation data overlaps the Christchurch electricity period.",
+        )
+    meta = rad.attrs.get("metadata", {})
     panel = PanelConfig(
         tilt=req.panel.tilt,
         azimuth=req.panel.azimuth,
@@ -360,9 +425,6 @@ def money(req: MoneyRequest) -> dict:
         inverter_efficiency=req.panel.inverter_efficiency,
     )
 
-    start = el.index.min()
-    end = el.index.max()
-    rad = _christchurch_hourly_radiation().loc[start:end]
     result = run_simulation(
         rad, panel=panel,
         latitude=meta.get("latitude", 0.0),
