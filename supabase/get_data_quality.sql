@@ -11,10 +11,21 @@
 -- They were computed with pvlib's apparent_zenith (precise solar geometry),
 -- which does not map trivially to SQL; the rest of the report is identical.
 --
--- Run this once in the Supabase SQL editor (or as a migration). The app calls it
--- via PostgREST RPC:  POST /rest/v1/rpc/get_data_quality
+-- Run this once in the Supabase SQL editor (or as a migration). It is
+-- idempotent: it creates the supporting index and (re)defines the function.
+-- The app calls it via PostgREST RPC:  POST /rest/v1/rpc/get_data_quality
 --     body: {"location":"Auckland","latitude":-36.73,"longitude":174.71,"altitude":51}
+--
+-- Performance: the original version did ~9 separate full scans/sorts of the
+-- table and hit Supabase's statement_timeout. This version scans the table
+-- once for all aggregates and twice (index-ordered) for the interval/gap
+-- windows, and reuses the (location, start_ts_utc) index.
 -- ============================================================================
+
+-- Composite index so `WHERE location = ...` plus the ORDER BY in the window
+-- functions resolve from the index (no per-call sort / full scan).
+CREATE INDEX IF NOT EXISTS idx_cams_radiation_location_ts
+    ON cams_radiation (location, start_ts_utc);
 
 CREATE OR REPLACE FUNCTION public.get_data_quality(
     location   text,
@@ -30,6 +41,7 @@ DECLARE
     v_location   text := location;
 
     _n           bigint;
+    _distinct    bigint;
     _start       timestamptz;
     _end         timestamptz;
     _span_h      double precision;
@@ -63,8 +75,32 @@ DECLARE
     _has_error  boolean := false;
     _rec        record;
 BEGIN
-    SELECT count(*), min(start_ts_utc), max(start_ts_utc)
-      INTO _n, _start, _end
+
+    -- Single pass over the (location, start_ts_utc) index: count, duplicates,
+    -- negatives, per-column ranges, DHI<=GHI, and the reliability distribution.
+    SELECT count(*), count(DISTINCT cr.start_ts_utc),
+           min(cr.start_ts_utc), max(cr.start_ts_utc),
+           count(*) FILTER (WHERE cr.ghi < 0),
+           count(*) FILTER (WHERE cr.dhi < 0),
+           count(*) FILTER (WHERE cr.bni < 0),
+           count(*) FILTER (WHERE cr.clear_sky_ghi < 0),
+           count(*) FILTER (WHERE cr.clear_sky_dhi < 0),
+           count(*) FILTER (WHERE cr.clear_sky_bni < 0),
+           min(cr.ghi), max(cr.ghi), min(cr.dhi), max(cr.dhi),
+           min(cr.bni), max(cr.bni),
+           min(cr.clear_sky_ghi), max(cr.clear_sky_ghi),
+           min(cr.clear_sky_dhi), max(cr.clear_sky_dhi),
+           min(cr.clear_sky_bni), max(cr.clear_sky_bni),
+           count(*) FILTER (WHERE cr.dhi > cr.ghi + 0.01),
+           min(cr.reliability),
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY cr.reliability),
+           count(*) FILTER (WHERE cr.reliability < 1.0),
+           count(*) FILTER (WHERE cr.reliability < 0.5)
+      INTO _n, _distinct, _start, _end,
+           _neg_ghi, _neg_dhi, _neg_dni, _neg_gc, _neg_dc, _neg_dnc,
+           _min_ghi, _max_ghi, _min_dhi, _max_dhi, _min_dni, _max_dni,
+           _min_gc, _max_gc, _min_dc, _max_dc, _min_dnc, _max_dnc,
+           _dhi_le_ghi, _rel_min, _rel_median, _rel_below1, _rel_below05
       FROM cams_radiation cr
      WHERE cr.location = v_location;
 
@@ -94,76 +130,45 @@ BEGIN
         );
     END IF;
 
+
     -- Median interval length (hours) between consecutive timestamps.
-    SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY d)
+    -- The window ORDER BY is satisfied by the composite index (no sort).
+    SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY d.diff_h)
       INTO _interval_h
       FROM (
-        SELECT EXTRACT(EPOCH FROM (start_ts_utc - LAG(start_ts_utc)
-                                   OVER (ORDER BY start_ts_utc))) / 3600.0 AS d
+        SELECT EXTRACT(EPOCH FROM (cr.start_ts_utc
+                       - LAG(cr.start_ts_utc) OVER (ORDER BY cr.start_ts_utc)))
+               / 3600.0 AS diff_h
           FROM cams_radiation cr
          WHERE cr.location = v_location
-      ) t
-     WHERE d IS NOT NULL;
+      ) d
+     WHERE d.diff_h IS NOT NULL;
 
     _span_h := EXTRACT(EPOCH FROM (_end - _start)) / 3600.0;
     _expected := CASE WHEN _interval_h IS NOT NULL AND _interval_h > 0
                       THEN round(_span_h / _interval_h)::int + 1
                       ELSE _n::int END;
-    _duplicates := _n - (SELECT count(DISTINCT cr.start_ts_utc)
-                           FROM cams_radiation cr WHERE cr.location = v_location);
+    _duplicates := _n - _distinct;
     _missing := greatest(_expected - _n::int, 0);
     _completeness := round((_n::numeric / NULLIF(_expected, 0)) * 100.0, 2);
-
-    -- Negative-value counts per radiation column (internal names).
-    SELECT count(*) FILTER (WHERE cr.ghi < 0),
-           count(*) FILTER (WHERE cr.dhi < 0),
-           count(*) FILTER (WHERE cr.bni < 0),
-           count(*) FILTER (WHERE cr.clear_sky_ghi < 0),
-           count(*) FILTER (WHERE cr.clear_sky_dhi < 0),
-           count(*) FILTER (WHERE cr.clear_sky_bni < 0)
-      INTO _neg_ghi, _neg_dhi, _neg_dni, _neg_gc, _neg_dc, _neg_dnc
-      FROM cams_radiation cr WHERE cr.location = v_location;
-
-    -- Per-column min/max (W/m2).
-    SELECT min(cr.ghi), max(cr.ghi), min(cr.dhi), max(cr.dhi),
-           min(cr.bni), max(cr.bni),
-           min(cr.clear_sky_ghi), max(cr.clear_sky_ghi),
-           min(cr.clear_sky_dhi), max(cr.clear_sky_dhi),
-           min(cr.clear_sky_bni), max(cr.clear_sky_bni)
-      INTO _min_ghi, _max_ghi, _min_dhi, _max_dhi,
-           _min_dni, _max_dni, _min_gc, _max_gc, _min_dc, _max_dc, _min_dnc, _max_dnc
-      FROM cams_radiation cr WHERE cr.location = v_location;
-
-    -- DHI <= GHI plausibility (the only radiation check that needs no geometry).
-    SELECT count(*) INTO _dhi_le_ghi
-      FROM cams_radiation cr
-     WHERE cr.location = v_location AND cr.dhi > cr.ghi + 0.01;
-
-    -- Reliability distribution.
-    SELECT min(cr.reliability),
-           percentile_cont(0.5) WITHIN GROUP (ORDER BY cr.reliability),
-           count(*) FILTER (WHERE cr.reliability < 1.0),
-           count(*) FILTER (WHERE cr.reliability < 0.5)
-      INTO _rel_min, _rel_median, _rel_below1, _rel_below05
-      FROM cams_radiation cr WHERE cr.location = v_location;
     _rel_low_pct := round((_rel_below1::numeric / _n) * 100.0, 2);
 
     -- Top-5 gaps (intervals more than 1.5x the median).
     SELECT COALESCE(jsonb_agg(
-               jsonb_build_object('after', to_char(ts, 'YYYY-MM-DD HH24:MI:SS'),
-                                  'hours', round(diff_h, 2))
-               ORDER BY diff_h DESC), '[]'::jsonb)
+               jsonb_build_object('after', to_char(g.ts, 'YYYY-MM-DD HH24:MI:SS'),
+                                  'hours', round(g.diff_h, 2))
+               ORDER BY g.diff_h DESC), '[]'::jsonb)
       INTO _gaps
       FROM (
-        SELECT start_ts_utc AS ts,
-               EXTRACT(EPOCH FROM (start_ts_utc - LAG(start_ts_utc)
-                                   OVER (ORDER BY start_ts_utc))) / 3600.0 AS diff_h
+        SELECT cr.start_ts_utc AS ts,
+               EXTRACT(EPOCH FROM (cr.start_ts_utc
+                       - LAG(cr.start_ts_utc) OVER (ORDER BY cr.start_ts_utc)))
+               / 3600.0 AS diff_h
           FROM cams_radiation cr
          WHERE cr.location = v_location
       ) g
-     WHERE diff_h > _interval_h * 1.5
+     WHERE g.diff_h > _interval_h * 1.5
      LIMIT 5;
-
 
     -- Assemble the "Findings" list + status.
     _checks := '[]'::jsonb;
@@ -178,21 +183,10 @@ BEGIN
     IF _duplicates > 0 THEN _checks := _checks || jsonb_build_array(jsonb_build_object('level','warn','msg', format('%s duplicate timestamps', _duplicates))); END IF;
     IF _missing > 0 THEN _checks := _checks || jsonb_build_array(jsonb_build_object('level','warn','msg', format('%s missing intervals', _missing))); END IF;
 
-    FOR _rec IN
-        SELECT to_char(g.ts, 'YYYY-MM-DD HH24:MI:SS') AS ts, round(g.diff_h, 2) AS hours
-          FROM (
-            SELECT start_ts_utc AS ts,
-                   EXTRACT(EPOCH FROM (start_ts_utc - LAG(start_ts_utc)
-                                       OVER (ORDER BY start_ts_utc))) / 3600.0 AS diff_h
-              FROM cams_radiation cr WHERE cr.location = v_location
-          ) g
-         WHERE g.diff_h > _interval_h * 1.5
-         ORDER BY g.diff_h DESC
-         LIMIT 5
+    FOR _rec IN SELECT value AS g FROM jsonb_array_elements(_gaps)
     LOOP
-        _checks := _checks || jsonb_build_array(
-            jsonb_build_object('level','warn','msg',
-                               format('gap of %s hours after %s', _rec.hours, _rec.ts)));
+        _checks := _checks || jsonb_build_array(jsonb_build_object('level','warn','msg',
+            format('gap of %s hours after %s', _rec.g->>'hours', _rec.g->>'after')));
     END LOOP;
 
     IF _rel_low_pct > 5.0 THEN
