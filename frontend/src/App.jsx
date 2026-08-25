@@ -1112,7 +1112,7 @@ export default function App() {
                     <b> Reliability</b> value (0–1) = the proportion of reliable data in each 15-minute
                     interval, based on how much the satellite cloud retrieval could be trusted. The
                     report checks time continuity, radiation plausibility (e.g. no negative values,
-                    GHI ≈ DHI + DNI·cos(zenith)) and the reliability distribution.
+                    DHI&nbsp;&le;&nbsp;GHI) and the reliability distribution.
                   </div>
 
                   <section className="report">
@@ -1158,10 +1158,10 @@ export default function App() {
                       </tbody>
                     </table>
                     <div className="dq-rows">
-                      <div className="dq-row"><span>GHI ≈ DHI + DNI·cos(z), mean residual</span><b>{dqResult.radiation.ghi_conservation.mean_residual} W/m²</b></div>
-                      <div className="dq-row"><span>…max |residual|</span><b>{dqResult.radiation.ghi_conservation.max_abs_residual} W/m²</b></div>
+                      <div className="dq-row"><span>GHI ≈ DHI + DNI·cos(z), mean residual</span><b>{dqResult.radiation.ghi_conservation?.mean_residual ?? 'n/a'} W/m²</b></div>
+                      <div className="dq-row"><span>…max |residual|</span><b>{dqResult.radiation.ghi_conservation?.max_abs_residual ?? 'n/a'} W/m²</b></div>
                       <div className="dq-row"><span>DHI ≤ GHI violations</span><b>{dqResult.radiation.dhi_le_ghi_violations}</b></div>
-                      <div className="dq-row"><span>BHI ≤ GHI violations</span><b>{dqResult.radiation.bhi_le_ghi_violations}</b></div>
+                      <div className="dq-row"><span>BHI ≤ GHI violations</span><b>{dqResult.radiation.bhi_le_ghi_violations ?? 'n/a'}</b></div>
                     </div>
                   </section>
 

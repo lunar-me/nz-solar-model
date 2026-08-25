@@ -242,3 +242,41 @@ def fetch_electricity() -> list[dict]:
         filters=[],
         order="datetime_utc.asc",
     )
+
+
+class RPCFunctionNotFoundError(RuntimeError):
+    """A PostgREST RPC function is not installed on the Supabase project yet."""
+
+
+def fetch_data_quality(location: str, latitude: float, longitude: float,
+                       altitude: float) -> dict:
+    """Compute the Data Quality report server-side via the PostgREST RPC.
+
+    Delegates the whole report to the ``get_data_quality`` Postgres function
+    (see ``supabase/get_data_quality.sql``), which aggregates over the table
+    in the database and returns a single JSON object — so the app never
+    downloads the full multi-year dataset for this tab.
+
+    Raises :class:`RPCFunctionNotFoundError` if the function hasn't been
+    created yet (the caller may fall back to the in-app computation).
+    """
+    url = f"https://{SUPABASE_URL}/rest/v1/rpc/get_data_quality"
+    _t0 = time.perf_counter()
+    with httpx.Client(timeout=120.0) as client:
+        resp = client.post(
+            url,
+            headers=_headers(),
+            json={
+                "location": location,
+                "latitude": latitude,
+                "longitude": longitude,
+                "altitude": altitude,
+            },
+        )
+        if resp.status_code == 404:
+            raise RPCFunctionNotFoundError("get_data_quality")
+        resp.raise_for_status()
+    elapsed = time.perf_counter() - _t0
+    _logger.info("rpc.get_data_quality | %.2fs | location=%s",
+                 elapsed, location)
+    return resp.json()

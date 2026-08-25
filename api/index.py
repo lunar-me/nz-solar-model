@@ -25,6 +25,7 @@ from .engine import (PanelConfig, run_simulation, summarize, aggregate_energy,
                      data_quality_report)
 from .loader import (load_radiation_from_supabase, load_electricity_from_supabase,
                      _utc_iso)
+from .supabase_client import RPCFunctionNotFoundError, fetch_data_quality
 from .locations import LOCATIONS
 from .schemas import (AggregateRequest, SimulateRequest, StabilityRequest,
                       MoneyRequest)
@@ -527,17 +528,40 @@ def money(req: MoneyRequest) -> dict:
 
 @app.get("/api/data-quality")
 def data_quality(location: str = Query(...)) -> dict:
-    """Data-quality report for a location's CAMS dataset (idea.md #14)."""
+    """Data-quality report for a location's CAMS dataset (idea.md #14).
+
+    The heavy aggregation runs server-side in Postgres via the
+    ``get_data_quality`` RPC (``supabase/get_data_quality.sql``), so the app
+    doesn't download the whole multi-year table. If that function hasn't been
+    created in Supabase yet, fall back to the in-app computation (normalised to
+    the same JSON shape, with the two solar-zenith checks dropped).
+    """
     if location not in LOCATIONS:
         raise HTTPException(404, detail=f"Unknown location '{location}'")
-    rad = _cached_radiation(location)
-    meta = rad.attrs.get("metadata", {})
-    report = data_quality_report(
-        rad,
-        latitude=meta.get("latitude", 0.0),
-        longitude=meta.get("longitude", 0.0),
-        altitude=meta.get("altitude", 0.0),
-    )
+    loc = LOCATIONS[location]
+    meta = {
+        "latitude": loc.latitude,
+        "longitude": loc.longitude,
+        "altitude": loc.altitude,
+    }
+    try:
+        report = fetch_data_quality(
+            loc.supabase_name, loc.latitude, loc.longitude, loc.altitude
+        )
+    except RPCFunctionNotFoundError:
+        rad = _cached_radiation(location)
+        report = data_quality_report(
+            rad, loc.latitude, loc.longitude, loc.altitude
+        )
+        # Normalise the fallback to the SQL report's shape (solar checks dropped).
+        report["radiation"]["ghi_conservation"] = {
+            "mean_residual": None,
+            "max_abs_residual": None,
+        }
+        report["radiation"]["bhi_le_ghi_violations"] = None
+        report["checks"] = [
+            c for c in report["checks"] if "cosz" not in c["msg"]
+        ]
     report["location"] = location
     report["metadata"] = meta
     return report

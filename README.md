@@ -153,6 +153,28 @@ Notes:
 inverter_efficiency}`. `transposition_model` ∈ `perez` (default), `haydavies`,
 `isotropic`.
 
+## Data quality — computed in Postgres
+
+The `GET /api/data-quality` endpoint used to download the whole multi-year
+`cams_radiation` table and aggregate it in pandas, which was slow. The report
+is now computed **server-side in Postgres** by a function
+`public.get_data_quality(location, latitude, longitude, altitude)` that returns
+the complete report as one JSON object; the app just proxies the result.
+
+The SQL is in [`supabase/get_data_quality.sql`](supabase/get_data_quality.sql).
+Run it once in the **Supabase SQL editor** to install the function:
+
+```sql
+-- open supabase/get_data_quality.sql and run it (it's idempotent)
+```
+
+Until the function is installed, the endpoint **falls back** to the old in-app
+computation (so the app keeps working). The two solar-zenith-dependent checks
+(`GHI ≈ DHI + DNI·cos(z)` residual and `BHI ≤ GHI`) are intentionally dropped —
+they required pvlib solar geometry that doesn't map trivially to SQL — and the
+API returns `ghi_conservation` / `bhi_le_ghi_violations` as `null` (the UI shows
+`n/a`).
+
 ## Tests
 
 ```bash
