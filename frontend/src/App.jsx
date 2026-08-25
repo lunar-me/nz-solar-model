@@ -6,6 +6,9 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { getLocations, simulate, aggregate, stability, money, dataQuality } from './api.js';
+import { FaGithub } from 'react-icons/fa';
+import { GiMoon } from 'react-icons/gi';
+import { FaRegFileAlt } from 'react-icons/fa';
 
 const TRANSPOSITION_MODELS = ['perez', 'haydavies', 'isotropic'];
 
@@ -491,11 +494,21 @@ export default function App() {
           </div>
           <div className="header-actions">
             <a className="hdr-link" href="https://github.com/lunar-me/nz-solar-model"
-              target="_blank" rel="noopener noreferrer">
-              GitHub
+              target="_blank" rel="noopener noreferrer"
+              title="View source on GitHub" aria-label="View source on GitHub">
+              <FaGithub size={15} />
+              <span>GitHub</span>
             </a>
-            <a className="hdr-link" href="/paper.html" target="_blank" rel="noopener noreferrer">
-              📄 Paper
+            <a className="hdr-link" href="https://luna-lab.mywire.org/"
+              target="_blank" rel="noopener noreferrer"
+              title="Author's site — Luna Lab" aria-label="Author's site — Luna Lab">
+              <GiMoon size={15} />
+              <span>Luna Lab</span>
+            </a>
+            <a className="hdr-link" href="/paper.html" target="_blank" rel="noopener noreferrer"
+              title="Read the paper" aria-label="Read the paper">
+              <FaRegFileAlt size={15} />
+              <span>Paper</span>
             </a>
           </div>
         </div>
