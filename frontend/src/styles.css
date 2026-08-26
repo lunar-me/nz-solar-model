@@ -350,6 +350,16 @@ button.run:disabled { opacity: 0.6; cursor: progress; }
 @media (max-width: 900px) { .stab-row { flex-direction: column; } }
 
 /* My money tab */
+.disclaimer {
+  background: #4a3a12;
+  border: 1px solid var(--accent);
+  color: #ffe9c2;
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.6;
+}
 .explain {
   background: var(--panel);
   border: 1px solid var(--border);

@@ -39,7 +39,13 @@ class StabilityRequest(BaseModel):
 
 
 class MoneyRequest(BaseModel):
-    """Solar self-consumption / savings over the fixed Christchurch year."""
-    location: str = Field("christchurch", description="Locked to Christchurch")
+    """Solar self-consumption / savings over the fixed Christchurch year.
+
+    Electricity consumption always comes from the Christchurch dataset; the
+    ``location`` selects which city's radiation drives the solar side.
+    """
+    location: str = Field("christchurch",
+                          description="Location key; solar output uses this city's radiation, "
+                                      "electricity consumption is always Christchurch")
     panel: PanelConfigIn = Field(default_factory=PanelConfigIn)
 

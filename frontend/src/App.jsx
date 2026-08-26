@@ -412,14 +412,16 @@ export default function App() {
     setMoneyLoading(true);
     setMoneyError(null);
     try {
-      const data = await money({ location: 'christchurch', panel });
+      // Electricity consumption is always Christchurch's (the only dataset we
+      // have); the selected `location` drives the solar side.
+      const data = await money({ location, panel });
       setMoneyResult(data);
     } catch (e) {
       setMoneyError(e.message);
     } finally {
       setMoneyLoading(false);
     }
-  }, [panel]);
+  }, [location, panel]);
 
   useEffect(() => { if (activeTab === 'money') runMoney(); }, [runMoney, activeTab]);
 
@@ -438,16 +440,7 @@ export default function App() {
 
   useEffect(() => { if (activeTab === 'dataq') runDataQuality(); }, [runDataQuality, activeTab]);
 
-  // Tab switching: "My money" is locked to Christchurch; leaving it reverts to
-  // the default location (Auckland). Other tabs keep whatever the user picked.
-  const switchTab = (tab) => {
-    if (tab === 'money') {
-      setLocation('christchurch');
-    } else if (activeTab === 'money') {
-      setLocation('auckland');
-    }
-    setActiveTab(tab);
-  };
+  const switchTab = (tab) => setActiveTab(tab);
 
   const meta = locations.find((l) => l.key === location);
   const timeseries = useMemo(() => result?.timeseries ?? [], [result]);
@@ -526,9 +519,8 @@ export default function App() {
             <h2>Location</h2>
             <Field label="City" help={HELP.city}>
               <select
-                value={activeTab === 'money' ? 'christchurch' : location}
+                value={location}
                 onChange={(e) => setLocation(e.target.value)}
-                disabled={activeTab === 'money'}
               >
                 {locations.map((l) => (
                   <option key={l.key} value={l.key}>{l.name}</option>
@@ -973,6 +965,15 @@ export default function App() {
 
           {activeTab === 'money' && (
             <>
+              {location === 'auckland' && (
+                <div className="disclaimer">
+                  <b>Note:</b> Auckland electricity-consumption data isn't available
+                  yet, so this tab always uses <b>Christchurch</b> hourly usage to
+                  estimate savings. Solar generation, however, is modelled with
+                  <b> Auckland</b> radiation — treat the dollar figures as an
+                  approximation until Auckland consumption data arrives.
+                </div>
+              )}
               {moneyError && <div className="error">{moneyError}</div>}
               {!moneyResult && !moneyError && (<p className="hint">Loading... please wait</p>)}
               {moneyResult && (
@@ -992,7 +993,7 @@ export default function App() {
                   <section className="report">
                     <div className="report-head">
                       <h2>Solar savings</h2>
-                      <span className="report-period">18 Aug 2025 – 17 Aug 2026 · Christchurch</span>
+                      <span className="report-period">18 Aug 2025 – 17 Aug 2026 · {meta?.name ?? location} solar · Christchurch usage</span>
                     </div>
                     <div className="report-cards">
                       <div className="rcard"><span>Installed PV</span><b>{panel.rated_power_kwp} kWp</b></div>

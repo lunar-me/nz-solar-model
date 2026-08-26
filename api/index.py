@@ -386,39 +386,27 @@ def stability(req: StabilityRequest) -> dict:
 
 
 
-@lru_cache(maxsize=1)
-def _christchurch_hourly_radiation(start=None, end=None) -> pd.DataFrame:
-    """Hourly Christchurch radiation from Supabase (15-min data resampled).
-
-    The Supabase ``cams_radiation`` table is 15-minute; resample to hourly so
-    the money tab aligns with the hourly electricity consumption.  ``start`` /
-    ``end`` restrict the Supabase fetch to the needed range (the money tab only
-    needs the electricity year, not the whole 2020-2026 dataset).
-    """
-    rad = _range_radiation("christchurch", start, end)
-    hourly = rad.resample("1h").mean()
-    hourly.attrs["interval_h"] = 1.0
-    hourly.attrs["metadata"] = rad.attrs.get("metadata", {})
-    return hourly
-
-
 @app.post("/api/money")
 def money(req: MoneyRequest) -> dict:
-    """Solar self-consumption & savings against the fixed Christchurch year."""
-    if req.location != "christchurch":
-        raise HTTPException(400, detail="'My money' tab is locked to Christchurch.")
+    """Solar self-consumption & savings over the Christchurch electricity year.
 
+    Electricity consumption always uses the Christchurch dataset (Auckland
+    consumption isn't available yet), but the *solar* side uses the selected
+    location's radiation over that same hourly year.
+    """
     el = _cached_electricity()  # hourly consumption (kWh) + cost ($), UTC index (cached)
     if el.empty:
         raise HTTPException(
             400, detail="No Christchurch electricity consumption data available."
         )
 
-    # Fetch Christchurch radiation only across the electricity year (UTC range),
-    # rather than the entire 2020-2026 dataset, to keep memory + load time small.
+    # Fetch the selected location's radiation only across the electricity year
+    # (UTC range), rather than the entire 2020-2026 dataset, to keep memory +
+    # load time small.  Radiation is resampled to hourly to align with the
+    # hourly electricity consumption.
     start = el.index.min()
     end = el.index.max()
-    rad = _christchurch_hourly_radiation(start=start, end=end)
+    rad = _hourly_radiation(req.location, start=start, end=end)
     if rad.empty:
         raise HTTPException(
             400,
@@ -517,7 +505,7 @@ def money(req: MoneyRequest) -> dict:
         })
 
     return {
-        "location": "christchurch",
+        "location": req.location,
         "metadata": meta,
         "panel": req.panel.model_dump(),
         "totals": totals,
