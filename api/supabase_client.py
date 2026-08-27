@@ -39,6 +39,7 @@ SUPABASE_KEY = SUPABASE_KEY.strip()
 
 RADIATION_TABLE = "cams_radiation"
 ELECTRICITY_TABLE = "christchurch_electricity_consumption"
+REGION_TABLE = "region_electricity_generation_2025_1h"
 
 # Only the columns the app actually reads — we never SELECT * (dropping
 # `location`, `end_ts_utc`, `toa`, `clear_sky_bhi`, `bhi`, ... reduces payload).
@@ -46,6 +47,9 @@ RADIATION_COLUMNS = (
     "start_ts_utc,ghi,dhi,bni,clear_sky_ghi,clear_sky_dhi,clear_sky_bni,reliability"
 )
 ELECTRICITY_COLUMNS = "datetime_utc,usage_kWh,dollars"
+# usage_kwh (the region's actual generation) is kept so the row is
+# self-describing, but the app only consumes usage_percent.
+REGION_COLUMNS = "island,region,datetime_utc,usage_kwh,usage_percent"
 
 # PostgREST default / maximum rows returned per request.
 _PAGE_SIZE = 1000
@@ -244,6 +248,41 @@ def fetch_electricity() -> list[dict]:
     )
 
 
+def fetch_region_generation(region: str) -> list[dict]:
+    """Fetch every hourly row for one region from ``region_electricity_generation_2025_1h``.
+
+    ``region`` is the exact value of the table's ``region`` column
+    (e.g. ``"Auckland"`` or ``"Canterbury"``).
+    """
+    return _fetch_all(
+        REGION_TABLE,
+        REGION_COLUMNS,
+        filters=[("region", f"eq.{region}")],
+        order="datetime_utc.asc",
+    )
+
+
+def fetch_region_generation_by_island(island: str | None = None,
+                                      start: str | None = None,
+                                      end: str | None = None) -> list[dict]:
+    """Fetch hourly rows for one island (or all islands) within a UTC range.
+
+    ``island`` is the exact ``island`` column value (e.g. ``"North Island"``);
+    pass ``None`` to fetch every region. ``start`` / ``end`` are ISO-8601 UTC
+    timestamps that restrict the range via ``datetime_utc`` filters.
+    """
+    filters: list[tuple[str, str]] = []
+    if island:
+        filters.append(("island", f"eq.{island}"))
+    if start:
+        filters.append(("datetime_utc", f"gte.{start}"))
+    if end:
+        filters.append(("datetime_utc", f"lte.{end}"))
+    return _fetch_all(
+        REGION_TABLE, REGION_COLUMNS, filters=filters, order="datetime_utc.asc"
+    )
+
+
 class RPCFunctionNotFoundError(RuntimeError):
     """A PostgREST RPC function is not installed on the Supabase project yet."""
 
@@ -265,6 +304,12 @@ def fetch_data_quality(location: str) -> dict:
         resp = client.post(url, headers=_headers(), json={"location": location})
         if resp.status_code == 404:
             raise RPCFunctionNotFoundError("get_data_quality")
+        # Transient Supabase 5xx (e.g. statement_timeout under load) — retry once
+        # before giving up so the caller only falls back on a persistent failure.
+        if resp.status_code >= 500:
+            resp = client.post(url, headers=_headers(), json={"location": location})
+            if resp.status_code == 404:
+                raise RPCFunctionNotFoundError("get_data_quality")
         resp.raise_for_status()
     elapsed = time.perf_counter() - _t0
     _logger.info("rpc.get_data_quality | %.2fs | location=%s",

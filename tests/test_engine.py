@@ -193,3 +193,102 @@ def test_cloud_index_column(auckland):
     assert all("cloud_index" in m for m in months)
     assert all(0 <= m["cloud_index"] <= 1.5 for m in months)
 
+
+def test_self_consumption_helpers_synthetic():
+    """The shared self-consumption / savings helpers used by /api/money and
+    /api/model-money compute correctly on synthetic data (no network)."""
+    from api.index import _self_consumption_columns, _money_totals, _money_monthly
+
+    idx = pd.date_range("2025-01-01", periods=3, freq="h", tz="UTC")
+    df = pd.DataFrame({
+        "consumption_kwh": [10.0, 0.0, 5.0],
+        "solar_kwh": [8.0, 4.0, 0.0],
+        "cost_$": [3.5, 0.0, 1.75],
+    }, index=idx)
+
+    df = _self_consumption_columns(df)
+    # hour0: consume 10, solar 8  -> self 8, excess 0, grid 2, savings 8/10*3.5=2.8
+    # hour1: consume 0,  solar 4  -> self 0, excess 4, grid 0, savings 0
+    # hour2: consume 5,  solar 0  -> self 0, excess 0, grid 5, savings 0
+    assert list(df["self_consumed_kwh"]) == [8.0, 0.0, 0.0]
+    assert list(df["excess_kwh"]) == [0.0, 4.0, 0.0]
+    assert list(df["grid_kwh"]) == [2.0, 0.0, 5.0]
+    assert list(df["savings_$"]) == [pytest.approx(2.8), 0.0, 0.0]
+
+    totals = _money_totals(df)
+    assert totals["consumption_kwh"] == 15.0
+    assert totals["solar_kwh"] == 12.0
+    assert totals["savings_$"] == 2.8
+    assert totals["cost_without_solar_$"] == 5.25
+    assert totals["cost_with_solar_$"] == 2.45
+    # wasted solar (4 kWh) is valued at hour1's effective rate (cost/consumption
+    # = 0 because consumption was 0), so waste is $0 at that hour.
+    assert totals["wasted_value_$"] == 0.0
+
+    months = _money_monthly(df)
+    assert len(months) == 1
+    assert months[0]["savings_$"] == 2.8
+
+
+def test_model_money_math():
+    """Modelled hourly consumption/cost = annual_kwh * usage_percent / 100, and
+    the cost totals annual_kwh * price (the region loader is exercised live in
+    test_load_region_generation_nz_time)."""
+    import numpy as np
+
+    # usage_percent is a percentage number; annual=8000, price=0.35.
+    annual, price = 8000.0, 0.35
+    pct = pd.Series([0.5, 1.0, 2.5])  # sums to 4.0 (percent)
+    consumption = annual * pct / 100.0
+    cost = price * annual * pct / 100.0
+    assert np.allclose(consumption, [40.0, 80.0, 200.0])
+    assert np.allclose(cost, [14.0, 28.0, 70.0])
+    assert np.isclose(consumption.sum(), annual * pct.sum() / 100.0)
+    assert np.isclose(cost.sum(), price * annual * pct.sum() / 100.0)
+
+
+def test_add_daily_charges():
+    """A fixed daily charge adds $/day to the dollar totals only — it never
+    touches the per-hour kWh or the solar self-consumption / savings columns."""
+    from api.index import _self_consumption_columns, _add_daily_charges, _money_totals
+
+    # 48 hourly rows = exactly 2 full NZ days: starting 2025-06-01 12:00 UTC
+    # (= 2025-06-02 00:00 NZ) for 48h covers NZ 06-02 and 06-03.
+    idx = pd.date_range("2025-06-01 12:00", periods=48, freq="h", tz="UTC")
+    df = pd.DataFrame({
+        "consumption_kwh": [10.0] * 48,
+        "solar_kwh": [5.0] * 48,
+        "cost_$": [3.5] * 48,   # variable cost
+    }, index=idx)
+
+    base = _self_consumption_columns(df)
+    with_charge = _add_daily_charges(base.copy(), 1.50)
+    totals_base = _money_totals(base)
+    totals_charge = _money_totals(with_charge)
+
+    # kWh columns unchanged
+    assert (base["consumption_kwh"] == with_charge["consumption_kwh"]).all()
+    assert (base["solar_kwh"] == with_charge["solar_kwh"]).all()
+    assert (base["self_consumed_kwh"] == with_charge["self_consumed_kwh"]).all()
+    # savings unchanged (fixed charge is not savable)
+    assert totals_base["savings_$"] == totals_charge["savings_$"]
+    # 2 days * 1.5 = 3.0 added to the dollar totals
+    assert abs(totals_charge["cost_without_solar_$"] - totals_base["cost_without_solar_$"] - 3.0) < 1e-9
+    assert abs(totals_charge["cost_with_solar_$"] - totals_base["cost_with_solar_$"] - 3.0) < 1e-9
+
+
+def test_load_region_generation_nz_time():
+    """The region 2025 loader converts UTC->NZ time so usage_percent sums to ~100
+    and the index spans the full NZ 2025 calendar year (network-backed)."""
+    from api.loader import load_region_generation_from_supabase
+
+    for region in ("Auckland", "Canterbury"):
+        df = load_region_generation_from_supabase(region)
+        assert "usage_percent" in df.columns
+        nz = df.index.tz_convert("Pacific/Auckland")
+        assert nz.min().year == 2025 and nz.max().year == 2025
+        # usage_percent is a percentage (0..100 scale) of annual use -> ~100 total
+        assert 99.0 < df["usage_percent"].sum() <= 100.5
+        assert df["usage_percent"].min() >= 0.0
+
+

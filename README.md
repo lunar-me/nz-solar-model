@@ -10,6 +10,16 @@ angle of incidence → Plane-of-Array (POA) irradiance → idealized DC/AC power
 15-minute energy, using established pvlib algorithms rather than hand-written
 astronomy.
 
+## Tabs
+
+- **Daily** — 15-minute PV output, irradiance and sun geometry for a chosen date range.
+- **Year** — monthly/weekly PV output for a calendar year.
+- **Stability** — year-over-year PV output.
+- **My money** — solar self-consumption & savings against Christchurch's real hourly electricity bill (locked to Christchurch).
+- **Model money** — solar savings against *modelled* hourly consumption: your annual kWh spread over a region's real 2025 generation curve (`region_electricity_generation_2025_1h`), priced at a flat per-kWh rate plus a fixed daily charge. Auckland uses the Waikato region; Christchurch uses Canterbury.
+- **Curves** — daily generation (MWh) of every region on each island, with per-region toggles, a log-scale option, and a daily-totals table.
+- **Data quality** — CAMS radiation dataset quality report.
+
 ## Model boundary
 
 The model computes, for every 15-minute interval:
@@ -39,7 +49,8 @@ configuration knob to be added later without touching the core geometry.
 ## Time handling
 
 Both Supabase tables store datetimes in **UTC** (`cams_radiation.start_ts_utc`,
-`christchurch_electricity_consumption.datetime_utc`). The loader keeps a
+`christchurch_electricity_consumption.datetime_utc`,
+`region_electricity_generation_2025_1h.datetime_utc`). The loader keeps a
 timezone-aware UTC `DatetimeIndex`; pvlib solar position is computed on those
 UTC stamps. The frontend displays them converted to **Pacific/Auckland** local
 time (handles NZST/NZDT automatically). No naive datetimes are used internally.
@@ -148,6 +159,11 @@ Notes:
 | `GET /api/locations` | the two switchable locations + metadata |
 | `GET /api/radiation/{location}?start&end&limit` | normalised radiation (W/m²) |
 | `POST /api/simulate` | run the PV model; body `{location, start, end, panel}` |
+| `POST /api/money` | solar self-consumption & savings over Christchurch's electricity year |
+| `POST /api/model-money` | solar savings against modelled hourly consumption (region 2025 curve) |
+| `POST /api/model-money/daily` | hourly detail for one day of the Model-money model |
+| `POST /api/curves/daily` | daily generation (MWh) of every region on both islands |
+| `GET /api/data-quality` | CAMS radiation data-quality report |
 
 `panel` = `{tilt, azimuth, rated_power_kwp, albedo, transposition_model,
 inverter_efficiency}`. `transposition_model` ∈ `perez` (default), `haydavies`,
@@ -183,5 +199,6 @@ python -m pytest tests -q
 
 Validates: timezone-aware UTC indexing, multi-year loading, zero output at
 night, positive solstice energy with rated-power clipping, summer > winter,
-flat-panel POA ≈ GHI, idealized linear power, summary shape, and that the two
-locations map to distinct coordinate sets.
+flat-panel POA ≈ GHI, idealized linear power, summary shape, the shared
+self-consumption / savings helpers, the fixed daily-charge model, and that the
+two locations map to distinct coordinate sets.

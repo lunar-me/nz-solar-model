@@ -22,7 +22,7 @@ from __future__ import annotations
 import pandas as pd
 
 from .locations import get_location
-from .supabase_client import fetch_electricity, fetch_radiation
+from .supabase_client import fetch_electricity, fetch_region_generation, fetch_radiation
 
 
 def _utc_iso(v) -> str | None:
@@ -125,4 +125,59 @@ def load_electricity_from_supabase() -> pd.DataFrame:
         index=idx,
     )
     out = out[~out.index.duplicated(keep="first")].sort_index()
+    return out
+
+
+def load_region_generation_from_supabase(region: str) -> pd.DataFrame:
+    """Load hourly generation share for one region, processed in NZ local time.
+
+    The Supabase ``region_electricity_generation_2025_1h`` table stores one row
+    per UTC hour, with ``usage_percent`` = the percentage (0..100 scale) of that
+    region's whole-year electricity use that fell in the hour (it sums to 100
+    across the year). A NZ wall-clock hour can span two UTC hours (and one NZ
+    hour vanishes at the DST spring-forward), so the timestamps are converted to
+    ``Pacific/Auckland``, re-binned to clean NZ-local 1h buckets, then converted
+    back to UTC. That keeps the hourly index aligned with the (also hourly)
+    radiation / solar series, because NZ's offset from UTC is always a whole
+    number of hours.
+
+    Returns a DataFrame indexed by UTC with a single ``usage_percent`` column.
+    """
+    rows = fetch_region_generation(region)
+    if not rows:
+        raise FileNotFoundError(
+            f"No generation data for region '{region}' in Supabase "
+            f"(table region_electricity_generation_2025_1h)."
+        )
+
+    df = pd.DataFrame(rows)
+    idx = pd.to_datetime(df["datetime_utc"], utc=True)
+    idx.name = None
+    df.index = idx
+    out = pd.DataFrame(
+        {
+            "usage_percent": pd.to_numeric(
+                df["usage_percent"], errors="coerce"
+            ).to_numpy(),
+        },
+        index=idx,
+    )
+    out = out[~out.index.duplicated(keep="first")].sort_index()
+
+    # --- process in NZ local time (the table's timestamps are UTC) ---
+    out.index = out.index.tz_convert("Pacific/Auckland")
+    # Re-bin onto clean 1h NZ buckets. The DST spring-forward hour does not exist
+    # in the source data, so it comes back as NaN and is filled with 0 (that
+    # wall-clock hour never happened, so no consumption is assigned to it).
+    # The source is already hourly, so each 1h bucket holds exactly one value.
+    out = out.resample("1h").sum().fillna(0.0)
+    out.index = out.index.tz_convert("UTC")
+
+    # Normalise so usage_percent sums to 100 over the year. The source table's
+    # scale is not guaranteed (usage_percent may be a 0..1 fraction or a 0..100
+    # percentage); the model's hourly `annual * usage_percent / 100` needs the
+    # annual total to be ~100 so the modelled consumption equals the user's kWh.
+    total = float(out["usage_percent"].sum())
+    if total > 0:
+        out["usage_percent"] = out["usage_percent"] / total * 100.0
     return out

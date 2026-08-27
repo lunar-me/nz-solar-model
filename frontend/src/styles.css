@@ -234,6 +234,24 @@ button.run:disabled { opacity: 0.6; cursor: progress; }
   user-select: none;
 }
 .toggle input { accent-color: #4caf50; cursor: pointer; }
+.curve-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 10px;
+}
+/* Curves tab: two island charts side by side */
+.curves-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+.curves-col { flex: 1 1 45%; min-width: 320px; }
+@media (max-width: 900px) {
+  .curves-row { flex-direction: column; }
+  .curves-col { flex-basis: 100%; }
+}
 .chart-badges {
   position: absolute;
   top: 8px;
@@ -384,6 +402,85 @@ button.run:disabled { opacity: 0.6; cursor: progress; }
   line-height: 1.6;
 }
 .money-final b { color: var(--accent); }
+
+/* Model money inputs */
+.model-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-items: flex-end;
+  padding: 4px 0 8px;
+}
+.model-inputs .field { min-width: 0; }
+.model-inputs input {
+  width: 150px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14px;
+}
+.model-calc {
+  background: var(--accent);
+  color: #07120a;
+  border: none;
+  border-radius: 6px;
+  padding: 9px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  align-self: flex-end;
+}
+.model-calc:disabled { opacity: 0.6; cursor: default; }
+
+/* Daily detail chart controls */
+.daily-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.daily-controls label { font-weight: 600; color: var(--text); }
+.daily-controls input {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+}
+.day-nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.day-nav:disabled { opacity: 0.4; cursor: default; }
+
+/* Monthly detail table + Daily detail chart side by side */
+.detail-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: flex-start;
+}
+.detail-col-table { flex: 1 1 400px; min-width: 0; }
+.detail-col-chart { flex: 1 1 380px; min-width: 0; }
+@media (max-width: 900px) {
+  .detail-row { flex-direction: column; }
+  .detail-col-table, .detail-col-chart { flex-basis: 100%; }
+}
 
 .chart-legend {
   display: flex;

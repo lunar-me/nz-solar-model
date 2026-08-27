@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Area, LineChart, Line, ComposedChart, ReferenceLine,
   BarChart, Bar, LabelList,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { getLocations, simulate, aggregate, stability, money, dataQuality } from './api.js';
+import { getLocations, simulate, aggregate, stability, money, modelMoney, modelMoneyDaily, curvesDaily, dataQuality } from './api.js';
 import { FaGithub } from 'react-icons/fa';
 import { GiMoon } from 'react-icons/gi';
 import { FaRegFileAlt } from 'react-icons/fa';
@@ -17,6 +17,12 @@ const TRANSPOSITION_MODELS = ['perez', 'haydavies', 'isotropic'];
 // client-side timezone conversion needed (and none that could silently drift).
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// Line colours for the per-region curves on the "Curves" tab (one per region).
+const CURVE_COLORS = [
+  '#e2431e', '#1e88e5', '#4caf50', '#fbc02d', '#8e24aa',
+  '#00acc1', '#d81b60', '#6d4c41', '#5e35b1', '#43a047',
+];
 
 function formatTick(v) {          // axis tick -> "21 Dec 2020, 13:00"
   if (!v) return v;
@@ -66,6 +72,11 @@ function toDMS(coord, posLetter, negLetter) {
 function addDays(dateStr, n) {
   return new Date(Date.parse(`${dateStr}T00:00:00Z`) + n * 86400000)
     .toISOString().slice(0, 10);
+}
+
+// A valid 2025 NZ date string "YYYY-MM-DD" (used to guard API calls).
+function isValidDate(d) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= '2025-01-01' && d <= '2025-12-31';
 }
 
 // ISO "YYYY-MM-DD" -> "21 Dec 2025".
@@ -161,6 +172,26 @@ const HELP = {
   moneyCost: {
     title: 'Monthly cost',
     text: 'The red bar is what the month\'s electricity would have cost with no solar; the green bar is the actual cost with solar. The gap between them is what you saved.',
+  },
+  modelMoneyAnnual: {
+    title: 'Annual consumption',
+    text: 'Your total electricity use for the year, in kWh. This is spread across the hours of the year using the selected region\'s real 2025 generation curve (each hour\'s usage of the annual total), so the modelled hourly consumption follows when the region actually uses electricity.',
+  },
+  modelMoneyPrice: {
+    title: 'Price per kWh (incl GST)',
+    text: 'The flat price you pay for each kWh including GST, in NZ dollars. Each modelled hour is billed at this rate, so your modelled annual cost equals price × annual usage.',
+  },
+  modelMoneyDaily: {
+    title: 'Daily charges',
+    text: 'A fixed daily connection fee in NZ dollars — what you pay just to stay connected to the grid, regardless of how much electricity you use. Each day adds this amount to your bill, on top of the per-kWh cost. It is a purely fixed charge: it never changes the solar output or any kWh values, and because it is paid no matter what, solar cannot "save" it.',
+  },
+  modelMoneyDailyChart: {
+    title: 'Daily detail',
+    text: 'Hourly curves for a single 2025 day: modelled solar generation (green) with its no-cloud reference (dashed), electricity consumption (red), the solar actually used on-site and thus "saved" (blue), and the solar that couldn\'t be used and was "wasted" (amber). Pick any 2025 day with the selector.',
+  },
+  curves: {
+    title: 'Curves',
+    text: 'Two daily charts — one per island — showing the actual hourly electricity generation (in MWh) of every region on that island, from the region_electricity_generation_2025_1h table. Pick any 2025 day with the selector or the ‹ › buttons.',
   },
   cloudDaily: {
     title: 'Cloud index (daily)',
@@ -314,6 +345,149 @@ function MoneyCostTooltip({ active, payload, label }) {
   );
 }
 
+// Reusable report used by the "Model money" tab: headline savings cards, the
+// monthly energy/cost charts, the monthly detail table and the final summary
+// line. Driven purely off the backend `result` ({ totals, monthly }).
+function MoneyReport({ result, periodLabel, detailRight }) {
+  const monthly = useMemo(() => (result?.monthly ?? []).map((m) => ({
+    ...m,
+    cost_without: m.cost_$,
+    cost_with: +(m.cost_$ - m.savings_$).toFixed(2),
+    wasted_pct: m.solar_kwh > 0 ? Math.round((m.excess_kwh / m.solar_kwh) * 100) : 0,
+  })), [result]);
+  const totalRow = useMemo(() => monthly.reduce((a, m) => {
+    a.consumption_kwh += m.consumption_kwh;
+    a.solar_kwh += m.solar_kwh;
+    a.self_consumed_kwh += m.self_consumed_kwh;
+    a.excess_kwh += m.excess_kwh;
+    a.grid_kwh += m.grid_kwh;
+    a.cost_$ += m.cost_$;
+    a.savings_$ += m.savings_$;
+    a.waste_$ += m.waste_$;
+    return a;
+  }, { consumption_kwh: 0, solar_kwh: 0, self_consumed_kwh: 0, excess_kwh: 0,
+       grid_kwh: 0, cost_$: 0, savings_$: 0, waste_$: 0 }), [monthly]);
+  const totals = result?.totals ?? {};
+
+  return (
+    <>
+      <section className="report">
+        <div className="report-head">
+          <h2>Solar savings</h2>
+          <span className="report-period">{periodLabel}</span>
+        </div>
+        <div className="report-cards">
+          <div className="rcard"><span>Installed PV</span><b>{result?.panel?.rated_power_kwp ?? ''} kWp</b></div>
+          <div className="rcard money-highlight"><span>Savings</span><b>${totals.savings_$} ({totals.savings_pct}%)</b></div>
+          <div className="rcard"><span>Bill without solar</span><b>${totals.cost_without_solar_$}</b></div>
+          <div className="rcard"><span>Bill with solar</span><b>${totals.cost_with_solar_$}</b></div>
+          <div className="rcard"><span>Wasted solar value</span><b>${totals.wasted_value_$}</b></div>
+          <div className="rcard"><span>Self-consumed</span><b>{totals.self_consumed_kwh} kWh ({totals.self_consumption_pct}%)</b></div>
+          <div className="rcard"><span>Grid import</span><b>{totals.grid_import_kwh} kWh</b></div>
+        </div>
+      </section>
+
+      <section className="chart-block">
+        <ChartHead title="Monthly energy (kWh)" help={HELP.moneyEnergy} />
+        <div className="chart">
+          <ResponsiveContainer width="100%" height={340}>
+            <BarChart data={monthly} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+              <CartesianGrid vertical={false} strokeDasharray="3 3" />
+              <XAxis dataKey="label" interval={0} tickFormatter={(v) => v.slice(0, 3)} />
+              <YAxis />
+              <Tooltip content={<MoneyEnergyTooltip />} />
+              <Legend content={EnergyLegend} />
+              <Bar dataKey="consumption_kwh" name="Consumption" fill="#e2431e" radius={[2, 2, 0, 0]} />
+              <Bar dataKey="grid_kwh" name="Grid import" fill="#1e88e5" radius={[2, 2, 0, 0]} />
+              <Bar dataKey="self_consumed_kwh" name="Solar used" fill="#4caf50" radius={[2, 2, 0, 0]} />
+              <Bar dataKey="excess_kwh" name="Solar wasted" fill="transparent" stroke="#4caf50" strokeWidth={2} radius={[2, 2, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
+
+      <section className="chart-block">
+        <ChartHead title="Monthly cost (NZD)" help={HELP.moneyCost} />
+        <div className="chart">
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={monthly} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+              <CartesianGrid vertical={false} strokeDasharray="3 3" />
+              <XAxis dataKey="label" interval={0} tickFormatter={(v) => v.slice(0, 3)} />
+              <YAxis />
+              <Tooltip content={<MoneyCostTooltip />} />
+              <Legend content={CostLegend} />
+              <Bar dataKey="cost_without" name="Without solar ($)" fill="#fbc02d" radius={[2, 2, 0, 0]}>
+                <LabelList dataKey="cost_without" position="top" formatter={(v) => `$${Math.round(v)}`} />
+              </Bar>
+              <Bar dataKey="cost_with" name="With solar ($)" fill="#4caf50" radius={[2, 2, 0, 0]}>
+                <LabelList dataKey="cost_with" position="top" formatter={(v) => `$${Math.round(v)}`} />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
+
+      <section className="chart-block">
+        <div className="detail-row">
+          <div className="detail-col-table">
+            <div className="chart-head"><h2>Monthly detail</h2></div>
+            <div className="agg-table-wrap">
+              <table className="agg-table money-table">
+            <thead>
+              <tr>
+                <th>Month</th><th>Use (kWh)</th><th>Solar (kWh)</th><th>Used (kWh)</th>
+                <th>Wasted (kWh)</th><th>Wasted %</th><th>Grid (kWh)</th><th>Cost ($)</th><th>Saved ($)</th><th>Wasted ($)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthly.map((m) => (
+                <tr key={m.month}>
+                  <td>{m.label}</td>
+                  <td>{Math.round(m.consumption_kwh)}</td>
+                  <td>{Math.round(m.solar_kwh)}</td>
+                  <td>{Math.round(m.self_consumed_kwh)}</td>
+                  <td>{Math.round(m.excess_kwh)}</td>
+                  <td>{m.wasted_pct}%</td>
+                  <td>{Math.round(m.grid_kwh)}</td>
+                  <td>{Math.round(m.cost_$)}</td>
+                  <td>{Math.round(m.savings_$)}</td>
+                  <td>{Math.round(m.waste_$)}</td>
+                </tr>
+              ))}
+              <tr className="agg-total">
+                <td>Total</td>
+                <td>{Math.round(totalRow.consumption_kwh)}</td>
+                <td>{Math.round(totalRow.solar_kwh)}</td>
+                <td>{Math.round(totalRow.self_consumed_kwh)}</td>
+                <td>{Math.round(totalRow.excess_kwh)}</td>
+                <td>{Math.round((totalRow.excess_kwh / totalRow.solar_kwh) * 100)}%</td>
+                <td>{Math.round(totalRow.grid_kwh)}</td>
+                <td>{Math.round(totalRow.cost_$)}</td>
+                <td>{Math.round(totalRow.savings_$)}</td>
+                <td>{Math.round(totalRow.waste_$)}</td>
+              </tr>
+            </tbody>
+          </table>
+          </div>
+          </div>
+          {detailRight && (
+            <div className="detail-col-chart">{detailRight}</div>
+          )}
+        </div>
+      </section>
+
+      <div className="money-final">
+        Over the year, solar could save me <b>${totals.savings_$}</b> ({totals.savings_pct}%
+        of my bill) — and <b>{totals.excess_kwh} kWh</b> of solar (
+        {Math.round((totals.excess_kwh / totals.solar_kwh) * 100)}% of what I
+        could produce, worth ~${totals.wasted_value_$}) would be wasted because
+        I couldn't use it the moment it was produced.
+      </div>
+
+    </>
+  );
+}
+
 export default function App() {
   const [locations, setLocations] = useState([]);
   const [location, setLocation] = useState('auckland');
@@ -345,6 +519,26 @@ export default function App() {
   const [moneyResult, setMoneyResult] = useState(null);
   const [moneyLoading, setMoneyLoading] = useState(false);
   const [moneyError, setMoneyError] = useState(null);
+
+  const [annualKwh, setAnnualKwh] = useState(10000);
+  const [kwhPriceGst, setKwhPriceGst] = useState(0.35);
+  const [dailyCharge, setDailyCharge] = useState(1.5);
+  const [modelMoneyResult, setModelMoneyResult] = useState(null);
+  const [modelMoneyLoading, setModelMoneyLoading] = useState(false);
+  const [modelMoneyError, setModelMoneyError] = useState(null);
+
+  const [dailyDate, setDailyDate] = useState('2025-08-18');
+  const [dailyResult, setDailyResult] = useState(null);
+  const [dailyLoading, setDailyLoading] = useState(false);
+  const [dailyError, setDailyError] = useState(null);
+  const [showDailyClear, setShowDailyClear] = useState(false);
+
+  const [curvesDate, setCurvesDate] = useState('2025-08-18');
+  const [curvesResult, setCurvesResult] = useState(null);
+  const [curvesLoading, setCurvesLoading] = useState(false);
+  const [curvesError, setCurvesError] = useState(null);
+  const [hiddenRegions, setHiddenRegions] = useState(() => new Set());
+  const [logScale, setLogScale] = useState(false);
 
   const [dqResult, setDqResult] = useState(null);
   const [dqLoading, setDqLoading] = useState(false);
@@ -425,6 +619,127 @@ export default function App() {
 
   useEffect(() => { if (activeTab === 'money') runMoney(); }, [runMoney, activeTab]);
 
+  const runModelMoney = useCallback(async () => {
+    setModelMoneyLoading(true);
+    setModelMoneyError(null);
+    try {
+      const data = await modelMoney({
+        location, panel,
+        annual_kwh: annualKwh,
+        kwh_price_gst: kwhPriceGst,
+        daily_charge: dailyCharge,
+      });
+      setModelMoneyResult(data);
+    } catch (e) {
+      setModelMoneyError(e.message);
+    } finally {
+      setModelMoneyLoading(false);
+    }
+  }, [location, panel, annualKwh, kwhPriceGst, dailyCharge]);
+
+  useEffect(() => { if (activeTab === 'modelmoney') runModelMoney(); }, [runModelMoney, activeTab]);
+
+  const runDaily = useCallback(async () => {
+    if (!isValidDate(dailyDate)) {
+      setDailyError('Please pick a valid 2025 date (YYYY-MM-DD).');
+      setDailyResult(null);
+      return;
+    }
+    setDailyLoading(true);
+    setDailyError(null);
+    try {
+      const data = await modelMoneyDaily({
+        location, panel,
+        annual_kwh: annualKwh,
+        kwh_price_gst: kwhPriceGst,
+        date: dailyDate,
+      });
+      setDailyResult(data);
+    } catch (e) {
+      setDailyError(e.message);
+    } finally {
+      setDailyLoading(false);
+    }
+  }, [location, panel, annualKwh, kwhPriceGst, dailyDate]);
+
+  // Populate the "Daily detail" chart once a model result exists, and refresh it
+  // whenever the day selector (or model inputs) change.
+  useEffect(() => {
+    if (activeTab === 'modelmoney' && modelMoneyResult) runDaily();
+  }, [activeTab, modelMoneyResult, runDaily]);
+
+  // Daily detail data as average power in watts (kWh/hour × 1000 = W).
+  const dailyData = useMemo(() => (dailyResult?.daily ?? []).map((d) => ({
+    hour: d.hour,
+    time: d.time,
+    consumptionW: Math.round(d.consumption_kwh * 1000),
+    solarW: Math.round(d.solar_kwh * 1000),
+    solarClearW: Math.round(d.solar_clear_kwh * 1000),
+    savedW: Math.round(d.self_consumed_kwh * 1000),
+    wastedW: Math.round(d.excess_kwh * 1000),
+  })), [dailyResult]);
+
+  // Move the Daily detail day selector by `delta` days, clamped to the 2025 year.
+  const shiftDailyDate = (delta) => {
+    setDailyDate((d) => {
+      const next = addDays(d, delta);
+      return (next < '2025-01-01') ? '2025-01-01' : (next > '2025-12-31') ? '2025-12-31' : next;
+    });
+  };
+
+  const runCurves = useCallback(async () => {
+    if (!isValidDate(curvesDate)) {
+      setCurvesError('Please pick a valid 2025 date (YYYY-MM-DD).');
+      setCurvesResult(null);
+      return;
+    }
+    setCurvesLoading(true);
+    setCurvesError(null);
+    try {
+      const data = await curvesDaily({ date: curvesDate });
+      setCurvesResult(data);
+    } catch (e) {
+      setCurvesError(e.message);
+    } finally {
+      setCurvesLoading(false);
+    }
+  }, [curvesDate]);
+
+  useEffect(() => { if (activeTab === 'curves') runCurves(); }, [runCurves, activeTab]);
+
+  // Move the Curves day selector by `delta` days, clamped to the 2025 year.
+  const shiftCurvesDate = (delta) => {
+    setCurvesDate((d) => {
+      const next = addDays(d, delta);
+      return (next < '2025-01-01') ? '2025-01-01' : (next > '2025-12-31') ? '2025-12-31' : next;
+    });
+  };
+
+  // Show/hide a region's line on the Curves charts.
+  const toggleRegion = (region) => {
+    setHiddenRegions((prev) => {
+      const next = new Set(prev);
+      if (next.has(region)) next.delete(region); else next.add(region);
+      return next;
+    });
+  };
+
+  // Per-island daily totals (MWh) for the Curves summary table.
+  const curvesTable = useMemo(() => {
+    if (!curvesResult) return null;
+    const segments = ['North Island', 'South Island'].map((island) => {
+      const info = curvesResult.islands[island];
+      const rows = info.regions.map((r) => ({
+        name: r,
+        total: info.rows.reduce((a, row) => a + (row[r] || 0), 0),
+      }));
+      const subtotal = rows.reduce((a, r) => a + r.total, 0);
+      return { island, rows, subtotal };
+    });
+    const grand = segments.reduce((a, s) => a + s.subtotal, 0);
+    return { segments, grand };
+  }, [curvesResult]);
+
   const runDataQuality = useCallback(async () => {
     setDqLoading(true);
     setDqError(null);
@@ -442,6 +757,11 @@ export default function App() {
 
   const switchTab = (tab) => setActiveTab(tab);
 
+  // The My money tab is Christchurch-only: force the location to Christchurch.
+  useEffect(() => {
+    if (activeTab === 'money' && location !== 'christchurch') setLocation('christchurch');
+  }, [activeTab, location]);
+
   const meta = locations.find((l) => l.key === location);
   const timeseries = useMemo(() => result?.timeseries ?? [], [result]);
   const summary = result?.summary ?? null;
@@ -458,6 +778,7 @@ export default function App() {
     : activeTab === 'year' ? aggLoading
     : activeTab === 'stability' ? stabLoading
     : activeTab === 'dataq' ? dqLoading
+    : activeTab === 'modelmoney' ? modelMoneyLoading
     : moneyLoading;
   const moneyMonthly = useMemo(() => (moneyResult?.monthly ?? []).map((m) => ({
     ...m,
@@ -510,6 +831,8 @@ export default function App() {
         <button className={activeTab === 'daily' ? 'tab active' : 'tab'} onClick={() => switchTab('daily')}>Daily</button>
         <button className={activeTab === 'year' ? 'tab active' : 'tab'} onClick={() => switchTab('year')}>Year</button>
         <button className={activeTab === 'money' ? 'tab active' : 'tab'} onClick={() => switchTab('money')}>$ My money</button>
+        <button className={activeTab === 'modelmoney' ? 'tab active' : 'tab'} onClick={() => switchTab('modelmoney')}>Model money</button>
+        <button className={activeTab === 'curves' ? 'tab active' : 'tab'} onClick={() => switchTab('curves')}>Curves</button>
         <button className={activeTab === 'dataq' ? 'tab active' : 'tab'} onClick={() => switchTab('dataq')}>Data quality</button>
       </div>
       <div className="layout">
@@ -520,11 +843,15 @@ export default function App() {
             <Field label="City" help={HELP.city}>
               <select
                 value={location}
+                disabled={activeTab === 'money'}
+                title={activeTab === 'money' ? 'The My money tab is locked to Christchurch' : undefined}
                 onChange={(e) => setLocation(e.target.value)}
               >
-                {locations.map((l) => (
-                  <option key={l.key} value={l.key}>{l.name}</option>
-                ))}
+                {locations
+                  .filter((l) => (activeTab === 'money' ? l.key === 'christchurch' : true))
+                  .map((l) => (
+                    <option key={l.key} value={l.key}>{l.name}</option>
+                  ))}
               </select>
             </Field>
             {meta && (
@@ -611,11 +938,13 @@ export default function App() {
               : activeTab === 'year' ? runYear()
               : activeTab === 'stability' ? runStability()
               : activeTab === 'dataq' ? runDataQuality()
+              : activeTab === 'modelmoney' ? runModelMoney()
               : runMoney())}
             disabled={activeTab === 'daily' ? loading
               : activeTab === 'year' ? aggLoading
               : activeTab === 'stability' ? stabLoading
               : activeTab === 'dataq' ? dqLoading
+              : activeTab === 'modelmoney' ? modelMoneyLoading
               : moneyLoading}
             className="run"
           >
@@ -623,7 +952,9 @@ export default function App() {
               : activeTab === 'year' ? aggLoading
               : activeTab === 'stability' ? stabLoading
               : activeTab === 'dataq' ? dqLoading
-              : moneyLoading) ? 'Running\u2026' : 'Run'}
+              : activeTab === 'modelmoney' ? modelMoneyLoading
+              : moneyLoading) ? 'Running\u2026'
+              : activeTab === 'modelmoney' ? 'Calculate' : 'Run'}
           </button>
         </aside>
 
@@ -965,15 +1296,6 @@ export default function App() {
 
           {activeTab === 'money' && (
             <>
-              {location === 'auckland' && (
-                <div className="disclaimer">
-                  <b>Note:</b> Auckland electricity-consumption data isn't available
-                  yet, so this tab always uses <b>Christchurch</b> hourly usage to
-                  estimate savings. Solar generation, however, is modelled with
-                  <b> Auckland</b> radiation — treat the dollar figures as an
-                  approximation until Auckland consumption data arrives.
-                </div>
-              )}
               {moneyError && <div className="error">{moneyError}</div>}
               {!moneyResult && !moneyError && (<p className="hint">Loading... please wait</p>)}
               {moneyResult && (
@@ -1095,6 +1417,222 @@ export default function App() {
                     could produce, worth ~${moneyTotals.wasted_value_$}) would be wasted because
                     I couldn't use it the moment it was produced.
                   </div>
+                </>
+              )}
+            </>
+          )}
+
+          {activeTab === 'modelmoney' && (
+            <>
+              <section className="chart-block">
+                <div className="model-inputs">
+                  <Field label="Annual consumption (kWh)" help={HELP.modelMoneyAnnual}>
+                    <input type="number" min="1" value={annualKwh}
+                      onChange={(e) => setAnnualKwh(Number(e.target.value))} />
+                  </Field>
+                  <Field label="Price per kWh incl GST ($)" help={HELP.modelMoneyPrice}>
+                    <input type="number" min="0.01" step="0.01" value={kwhPriceGst}
+                      onChange={(e) => setKwhPriceGst(Number(e.target.value))} />
+                  </Field>
+                  <Field label="Daily charges ($)" help={HELP.modelMoneyDaily}>
+                    <input type="number" min="0" step="0.01" value={dailyCharge}
+                      onChange={(e) => setDailyCharge(Number(e.target.value))} />
+                  </Field>
+                  <button className="model-calc" onClick={runModelMoney} disabled={modelMoneyLoading}>
+                    {modelMoneyLoading ? 'Calculating…' : 'Calculate'}
+                  </button>
+                </div>
+              </section>
+              {modelMoneyError && <div className="error">{modelMoneyError}</div>}
+              {!modelMoneyResult && !modelMoneyError && (
+                <p className="hint">
+                  Loading... please wait
+                </p>
+              )}
+              {modelMoneyResult && (
+                <>
+                  <div className="explain">
+                    This tab models my hourly consumption by spreading my annual usage
+                    (<b>{modelMoneyResult.annual_kwh} kWh</b> at <b>${modelMoneyResult.kwh_price_gst}/kWh</b>
+                    incl GST) over the 2025 electricity-generation curve for 
+                    <b>{modelMoneyResult.region}</b> — each hour consumes <i>annual × usage_percent ÷ 100</i> kWh
+                    and is billed at that
+                    flat rate. The modelled hourly consumption is then measured against the solar output the
+                    panel on the left could produce, exactly like the "My money" tab, so savings and the value
+                    of wasted solar are computed hour-by-hour at the flat rate. On top of that, a fixed daily
+                    connection fee of <b>${modelMoneyResult.daily_charge}/day</b> is added to every day's bill —
+                    a flat charge paid regardless of how much electricity is used, so solar can never reduce it.
+                    All amounts are in NZ dollars.
+                  </div>
+                  <MoneyReport result={modelMoneyResult}
+                    periodLabel={`${modelMoneyResult.region} 2025 · ${meta?.name ?? location} solar · modeled usage`}
+                    detailRight={
+                      <>
+                        <ChartHead title="Daily detail" help={HELP.modelMoneyDailyChart} />
+                        <div className="daily-controls">
+                          <button type="button" className="day-nav" onClick={() => shiftDailyDate(-1)}
+                            disabled={dailyDate <= '2025-01-01'} aria-label="Previous day">‹</button>
+                          <label htmlFor="model-daily-date">Day</label>
+                          <input id="model-daily-date" type="date" value={dailyDate}
+                            min="2025-01-01" max="2025-12-31"
+                            onChange={(e) => setDailyDate(e.target.value)} />
+                          <button type="button" className="day-nav" onClick={() => shiftDailyDate(1)}
+                            disabled={dailyDate >= '2025-12-31'} aria-label="Next day">›</button>
+                          <label className="toggle">
+                            <input type="checkbox" checked={showDailyClear}
+                              onChange={(e) => setShowDailyClear(e.target.checked)} />
+                            Show no-cloud line
+                          </label>
+                        </div>
+                        {dailyError && <div className="error">{dailyError}</div>}
+                        {!dailyResult && !dailyError && (
+                          <p className="hint">Loading daily detail... please wait</p>
+                        )}
+                        <div className="chart">
+                          <ResponsiveContainer width="100%" height={260}>
+                            <LineChart data={dailyData}
+                              margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="hour" minTickGap={20} />
+                              <YAxis tickFormatter={(v) => v} />
+                              <Tooltip
+                                formatter={(v, name) => [`${Number(v).toFixed(0)} W`, name]}
+                                labelStyle={{ color: '#222' }} />
+                              <Legend />
+                              <Line type="monotone" dataKey="consumptionW" name="Consumption (W)" stroke="#e2431e" dot={false} strokeWidth={2} />
+                              <Line type="monotone" dataKey="solarW" name="Solar (modelled) (W)" stroke="#4caf50" dot={false} strokeWidth={2} />
+                              {showDailyClear && (
+                                <Line type="monotone" dataKey="solarClearW" name="No-cloud (W)" stroke="#9ccc65" strokeDasharray="6 4" dot={false} strokeWidth={1.5} />
+                              )}
+                              <Line type="monotone" dataKey="savedW" name="Solar saved (W)" stroke="#1e88e5" dot={false} strokeWidth={2} />
+                              <Line type="monotone" dataKey="wastedW" name="Solar wasted (W)" stroke="#fbc02d" dot={false} strokeWidth={2} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                        <p className="cloud-note">
+                          Hourly average power (W) for {dailyResult?.date ?? dailyDate} in NZ time. "Solar saved"
+                          is solar used in-place (kept off the grid); "Solar wasted" is solar generated
+                          that couldn't be used that hour.
+                        </p>
+                      </>
+                    } />
+                </>
+              )}
+            </>
+          )}
+
+          {activeTab === 'curves' && (
+            <>
+              <section className="chart-block">
+                <div className="daily-controls">
+                  <button type="button" className="day-nav" onClick={() => shiftCurvesDate(-1)}
+                    disabled={curvesDate <= '2025-01-01'} aria-label="Previous day">‹</button>
+                  <label htmlFor="curves-date">Day</label>
+                  <input id="curves-date" type="date" value={curvesDate}
+                    min="2025-01-01" max="2025-12-31"
+                    onChange={(e) => setCurvesDate(e.target.value)} />
+                  <button type="button" className="day-nav" onClick={() => shiftCurvesDate(1)}
+                    disabled={curvesDate >= '2025-12-31'} aria-label="Next day">›</button>
+                  <label className="toggle">
+                    <input type="checkbox" checked={logScale}
+                      onChange={(e) => setLogScale(e.target.checked)} />
+                    Log scale
+                  </label>
+                </div>
+              </section>
+              <div className="explain">
+                This tab shows the <b>actual electricity generation</b> of every region on each island, hour by
+                hour, for a single 2025 day — read from 
+                <a className="hdr-link" href="https://www.ea.govt.nz/data-and-insights/datasets/wholesale/generation/generation-output/"
+                target="_blank" rel="noopener noreferrer">The Electricity Authority's dataset</a>. 
+                Pick a day (or step with the ‹ › buttons), compare how each region turns through the day, and
+                toggle any region's line on/off. Turn on "Log scale" when one region dwarfs the others. The table
+                below shows each region's daily total (MWh) with per-island sub-totals and a grand total.
+                This data is used to model electricity consumption curve. As you know New Zealand is an island (well, two islands… well, many islands) 
+                the point is we don't export electrical current nor import it, so generation = consumption, as we cannot store electricity on any significant scale. 
+                Yes, I know, I use a total region generation to model _residential_ sector consumption and it isn't exactly correct but there is no datasets 
+                with hourly granularity for residential electricity consumption I'm aware of.
+                Currently, Waikato is the model generation region for North Island and Canterbury for South Island.
+
+                More info about <a className="hdr-link" target="_blank" rel="noopener noreferrer" 
+                href="https://www.ea.govt.nz/news/eye-on-electricity/the-changing-nature-of-electricity-demand-in-aotearoa/">
+                daily and seasonal electricity demand patterns</a>
+              </div>
+              {curvesError && <div className="error">{curvesError}</div>}
+              {!curvesResult && !curvesError && (<p className="hint">Loading curves... please wait</p>)}
+              {curvesResult && (
+                <>
+                  <div className="curves-row">
+                  {['North Island', 'South Island'].map((island) => {
+                    const info = curvesResult.islands[island];
+                    return (
+                      <section className="chart-block curves-col" key={island}>
+                        <ChartHead title={`${island} — daily generation (MWh)`} help={HELP.curves} />
+                        <div className="curve-toggles">
+                          {info.regions.map((r) => (
+                            <label className="toggle" key={r}>
+                              <input type="checkbox" checked={!hiddenRegions.has(r)}
+                                onChange={() => toggleRegion(r)} />
+                              {r}
+                            </label>
+                          ))}
+                        </div>
+                        <div className="chart">
+                          <ResponsiveContainer width="100%" height={300}>
+                            <LineChart data={info.rows} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="hour" minTickGap={20} />
+                              <YAxis scale={logScale ? 'log' : 'linear'} domain={logScale ? [1, 'auto'] : [0, 'auto']} />
+                              <Tooltip
+                                formatter={(v, name) => [`${Number(v).toFixed(2)} MWh`, name]}
+                                labelStyle={{ color: '#222' }} />
+                              <Legend />
+                              {info.regions.map((r, i) => (
+                                !hiddenRegions.has(r) && (
+                                  <Line key={r} type="monotone" dataKey={r} name={r}
+                                    stroke={CURVE_COLORS[i % CURVE_COLORS.length]} dot={false} strokeWidth={2} />
+                                )
+                              ))}
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </section>
+                    );
+                  })}
+                  </div>
+                  {curvesTable && (
+                    <section className="chart-block">
+                      <div className="chart-head"><h2>Daily totals (MWh)</h2></div>
+                      <div className="agg-table-wrap">
+                        <table className="agg-table money-table">
+                          <thead>
+                            <tr><th>Island</th><th>Region</th><th>Daily (MWh)</th></tr>
+                          </thead>
+                          <tbody>
+                            {curvesTable.segments.map((seg) => (
+                              <Fragment key={seg.island}>
+                                {seg.rows.map((r) => (
+                                  <tr key={r.name}>
+                                    <td>{seg.island}</td>
+                                    <td>{r.name}</td>
+                                    <td>{r.total.toFixed(1)}</td>
+                                  </tr>
+                                ))}
+                                <tr className="agg-total">
+                                  <td colSpan={2}>{seg.island} total</td>
+                                  <td>{seg.subtotal.toFixed(1)}</td>
+                                </tr>
+                              </Fragment>
+                            ))}
+                            <tr className="agg-total">
+                              <td colSpan={2}>Grand total</td>
+                              <td>{curvesTable.grand.toFixed(1)}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  )}
                 </>
               )}
             </>

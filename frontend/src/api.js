@@ -50,6 +50,30 @@ export function money(payload) {
   }).then(json);
 }
 
+export function modelMoney(payload) {
+  return fetch(`${BASE}/model-money`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(json);
+}
+
+export function modelMoneyDaily(payload) {
+  return fetch(`${BASE}/model-money/daily`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(json);
+}
+
+export function curvesDaily(payload) {
+  return fetch(`${BASE}/curves/daily`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(json);
+}
+
 export function dataQuality(location) {
   return fetch(`${BASE}/data-quality?location=${encodeURIComponent(location)}`).then(json);
 }
