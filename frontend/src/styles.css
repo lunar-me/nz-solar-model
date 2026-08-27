@@ -55,6 +55,9 @@ header .subtitle { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
   padding: 20px 24px;
   align-items: start;
 }
+.layout-full {
+  grid-template-columns: 1fr;
+}
 
 .controls {
   background: var(--panel);

@@ -565,6 +565,19 @@ export default function App() {
     setPanel((p) => ({ ...p, [key]: e.target.type === 'number' ? Number(v) : v }));
   };
 
+  // The browser's native up/down stepper on a controlled number input sometimes
+  // steps by 1 (instead of the field's `step`) on the first arrow press. Intercept
+  // the arrows and apply the step manually so increments are always exact. Enter
+  // still commits (runs the model) as before.
+  const onNumberKey = (setter, step, min, commit) => (e) => {
+    if (e.key === 'Enter') { commit(); }
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const dir = e.key === 'ArrowUp' ? 1 : -1;
+      setter((v) => Math.max(min, (v || 0) + dir * step));
+    }
+  };
+
   const run = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -649,13 +662,14 @@ export default function App() {
     }
   }, [location, panel, annualKwh, kwhPriceGst, dailyCharge]);
 
-  // Recalculate the model only after the user stops typing (debounced), not on
-  // every keystroke. The Calculate button still triggers an immediate run.
+  // Run when the Model savings tab is opened, and re-run when the left sidebar's
+  // panel / location controls change (like the other tabs). Typing in the model
+  // input fields is NOT a trigger — those recalculate on blur / Enter / Calculate.
   useEffect(() => {
     if (activeTab !== 'modelmoney') return;
-    const t = setTimeout(() => runModelMoney(), 500);
-    return () => clearTimeout(t);
-  }, [runModelMoney, activeTab]);
+    runModelMoney();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, panel, location]);
 
   // Sweep the rated power 1–15 kWp and record the modelled % savings, self-consumed
   // and grid-import kWh at each size.
@@ -677,6 +691,7 @@ export default function App() {
           savings_pct: t.savings_pct ?? 0,
           self_consumed_kwh: t.self_consumed_kwh ?? 0,
           grid_import_kwh: t.grid_import_kwh ?? 0,
+          excess_kwh: t.excess_kwh ?? 0,
         });
       }
       setModelSizeResult(points);
@@ -687,12 +702,14 @@ export default function App() {
     }
   }, [location, panel, annualKwh, kwhPriceGst, dailyCharge]);
 
-  // Re-run the sweep only after the user stops typing (debounced).
+  // Run when the Model size tab is opened, and re-run when the left sidebar's
+  // panel / location controls change (like the other tabs). Typing in the model
+  // input fields is NOT a trigger — those recalculate on blur / Enter / Calculate.
   useEffect(() => {
     if (activeTab !== 'modelsize') return;
-    const t = setTimeout(() => runModelSize(), 500);
-    return () => clearTimeout(t);
-  }, [runModelSize, activeTab]);
+    runModelSize();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, panel, location]);
 
   const runDaily = useCallback(async () => {
     if (!isValidDate(dailyDate)) {
@@ -895,7 +912,8 @@ export default function App() {
         <button className={activeTab === 'curves' ? 'tab active' : 'tab'} onClick={() => switchTab('curves')}>Curves</button>
         <button className={activeTab === 'dataq' ? 'tab active' : 'tab'} onClick={() => switchTab('dataq')}>Data quality</button>
       </div>
-      <div className="layout">
+      <div className={`layout${activeTab === 'curves' ? ' layout-full' : ''}`}>
+        {activeTab !== 'curves' && (
         <aside className="controls">
           <fieldset className="controls-field" disabled={busy}>
           <section>
@@ -1022,6 +1040,7 @@ export default function App() {
               : activeTab === 'modelmoney' || activeTab === 'modelsize' ? 'Calculate' : 'Run'}
           </button>
         </aside>
+        )}
 
         <main className="content">
           {activeTab === 'daily' && (
@@ -1494,15 +1513,21 @@ export default function App() {
                 <div className="model-inputs">
                   <Field label="Annual consumption (kWh)" help={HELP.modelMoneyAnnual}>
                     <input type="number" min="1" step="500" value={annualKwh}
-                      onChange={(e) => setAnnualKwh(Number(e.target.value))} />
+                      onChange={(e) => setAnnualKwh(Number(e.target.value))}
+                      onBlur={runModelMoney}
+                      onKeyDown={onNumberKey(setAnnualKwh, 500, 1, runModelMoney)} />
                   </Field>
                   <Field label="Price per kWh incl GST ($)" help={HELP.modelMoneyPrice}>
                     <input type="number" min="0.05" step="0.01" value={kwhPriceGst}
-                      onChange={(e) => setKwhPriceGst(Number(e.target.value))} />
+                      onChange={(e) => setKwhPriceGst(Number(e.target.value))}
+                      onBlur={runModelMoney}
+                      onKeyDown={onNumberKey(setKwhPriceGst, 0.01, 0.05, runModelMoney)} />
                   </Field>
                   <Field label="Daily charges ($)" help={HELP.modelMoneyDaily}>
                     <input type="number" min="0" step="0.01" value={dailyCharge}
-                      onChange={(e) => setDailyCharge(Number(e.target.value))} />
+                      onChange={(e) => setDailyCharge(Number(e.target.value))}
+                      onBlur={runModelMoney}
+                      onKeyDown={onNumberKey(setDailyCharge, 0.01, 0, runModelMoney)} />
                   </Field>
                 </div>
               </section>
@@ -1516,12 +1541,10 @@ export default function App() {
                 <>
                   <div className="explain">
                     This tab models my hourly consumption by spreading my annual usage
-                    (<b>{modelMoneyResult.annual_kwh} kWh</b> at <b>${modelMoneyResult.kwh_price_gst}/kWh</b>
-                    incl GST) over the 2025 electricity-generation curve for 
-                    <b>{modelMoneyResult.region}</b> — each hour consumes <i>annual × usage_percent ÷ 100</i> kWh
-                    and is billed at that
-                    flat rate. The modelled hourly consumption is then measured against the solar output the
-                    panel on the left could produce, exactly like the "My money" tab, so savings and the value
+                    (<b>{modelMoneyResult.annual_kwh} kWh</b> at <b>${modelMoneyResult.kwh_price_gst}/kWh</b> incl GST) over the 2025 
+                    electricity-generation curve for <b>{modelMoneyResult.region}</b> — each hour consumes <i>annual × usage_percent ÷ 100</i> kWh
+                    and is billed at that flat rate. The modelled hourly consumption is then measured against the solar output 
+                    the panel on the left could produce, exactly like the "My money" tab, so savings and the value
                     of wasted solar are computed hour-by-hour at the flat rate. On top of that, a fixed daily
                     connection fee of <b>${modelMoneyResult.daily_charge}/day</b> is added to every day's bill —
                     a flat charge paid regardless of how much electricity is used, so solar can never reduce it.
@@ -1590,15 +1613,21 @@ export default function App() {
                 <div className="model-inputs">
                   <Field label="Annual consumption (kWh)" help={HELP.modelMoneyAnnual}>
                     <input type="number" min="1" step="500" value={annualKwh}
-                      onChange={(e) => setAnnualKwh(Number(e.target.value))} />
+                      onChange={(e) => setAnnualKwh(Number(e.target.value))}
+                      onBlur={runModelSize}
+                      onKeyDown={onNumberKey(setAnnualKwh, 500, 1, runModelSize)} />
                   </Field>
                   <Field label="Price per kWh incl GST ($)" help={HELP.modelMoneyPrice}>
                     <input type="number" min="0.05" step="0.01" value={kwhPriceGst}
-                      onChange={(e) => setKwhPriceGst(Number(e.target.value))} />
+                      onChange={(e) => setKwhPriceGst(Number(e.target.value))}
+                      onBlur={runModelSize}
+                      onKeyDown={onNumberKey(setKwhPriceGst, 0.01, 0.05, runModelSize)} />
                   </Field>
                   <Field label="Daily charges ($)" help={HELP.modelMoneyDaily}>
                     <input type="number" min="0" step="0.01" value={dailyCharge}
-                      onChange={(e) => setDailyCharge(Number(e.target.value))} />
+                      onChange={(e) => setDailyCharge(Number(e.target.value))}
+                      onBlur={runModelSize}
+                      onKeyDown={onNumberKey(setDailyCharge, 0.01, 0, runModelSize)} />
                   </Field>
                 </div>
               </section>
@@ -1656,6 +1685,8 @@ export default function App() {
                               stroke="#4caf50" strokeWidth={2} dot={{ r: 3 }} />
                             <Line type="monotone" dataKey="grid_import_kwh" name="Grid import (kWh)"
                               stroke="#1e88e5" strokeWidth={2} dot={{ r: 3 }} />
+                            <Line type="monotone" dataKey="excess_kwh" name="Solar wasted (kWh)"
+                              stroke="#fbc02d" strokeWidth={2} dot={{ r: 3 }} />
                           </LineChart>
                         </ResponsiveContainer>
                       </div>
@@ -1671,6 +1702,7 @@ export default function App() {
                             <th>Savings (%)</th>
                             <th>Self-consumed (kWh)</th>
                             <th>Grid import (kWh)</th>
+                            <th>Solar wasted (kWh)</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1680,6 +1712,7 @@ export default function App() {
                               <td>{p.savings_pct.toFixed(1)}%</td>
                               <td>{Math.round(p.self_consumed_kwh)}</td>
                               <td>{Math.round(p.grid_import_kwh)}</td>
+                              <td>{Math.round(p.excess_kwh)}</td>
                             </tr>
                           ))}
                         </tbody>
