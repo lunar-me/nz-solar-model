@@ -345,7 +345,7 @@ function MoneyCostTooltip({ active, payload, label }) {
   );
 }
 
-// Reusable report used by the "Model money" tab: headline savings cards, the
+// Reusable report used by the "Model savings" tab: headline savings cards, the
 // monthly energy/cost charts, the monthly detail table and the final summary
 // line. Driven purely off the backend `result` ({ totals, monthly }).
 function MoneyReport({ result, periodLabel, detailRight }) {
@@ -831,7 +831,7 @@ export default function App() {
         <button className={activeTab === 'daily' ? 'tab active' : 'tab'} onClick={() => switchTab('daily')}>Daily</button>
         <button className={activeTab === 'year' ? 'tab active' : 'tab'} onClick={() => switchTab('year')}>Year</button>
         <button className={activeTab === 'money' ? 'tab active' : 'tab'} onClick={() => switchTab('money')}>$ My money</button>
-        <button className={activeTab === 'modelmoney' ? 'tab active' : 'tab'} onClick={() => switchTab('modelmoney')}>Model money</button>
+        <button className={activeTab === 'modelmoney' ? 'tab active' : 'tab'} onClick={() => switchTab('modelmoney')}>Model savings</button>
         <button className={activeTab === 'curves' ? 'tab active' : 'tab'} onClick={() => switchTab('curves')}>Curves</button>
         <button className={activeTab === 'dataq' ? 'tab active' : 'tab'} onClick={() => switchTab('dataq')}>Data quality</button>
       </div>
