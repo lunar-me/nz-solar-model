@@ -33,8 +33,9 @@ DC power (W), AC power (W), energy (Wh)
 
 Inputs: location (lat/longitude/altitude pinned per location in `locations.py`,
 since the Supabase table stores irradiance but not coordinates), panel
-tilt/azimuth, rated power (kWp), albedo, transposition model, inverter
-efficiency.
+tilt/azimuth, panel wattage (400/450/500 W) and number of panels (rated power
+= panels × wattage ÷ 1000, shown read-only), albedo, transposition model,
+inverter efficiency.
 
 This v1 is **idealized** by design: no module-temperature,
 no soiling/mismatch/shading/degradation losses. Each of those is an explicit

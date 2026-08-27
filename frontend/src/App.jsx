@@ -123,7 +123,15 @@ const HELP = {
   },
   power: {
     title: 'Rated power (kWp)',
-    text: 'The system’s STC rated DC power in kilowatt-peak (typical home systems are 3–10 kWp). The model produces 1 kW per 1000 W/m² of plane-of-array irradiance, clipped at this rating.',
+    text: 'The system’s STC rated DC power in kilowatt-peak (1 kWp = 2.5 standard 400W panels, typical home systems are 3–10 kWp). The model produces 1 kW per 1000 W/m² of plane-of-array irradiance, clipped at this rating.',
+  },
+  panelW: {
+    title: 'Panel (W)',
+    text: 'The STC rated power of a single panel in watts. Common residential panels are 400–500 W. The system\'s total rated power is Panel (W) × number of panels.',
+  },
+  numPanels: {
+    title: 'Number of panels',
+    text: 'How many panels are in the array. Total rated power (kWp) = number of panels × panel wattage ÷ 1000.',
   },
   albedo: {
     title: 'Albedo',
@@ -223,7 +231,7 @@ const HELP = {
   },
 };
 
-function Help({ title, text }) {
+function Help({ title, text, position }) {
   const [open, setOpen] = useState(false);
   return (
     <span className="help-wrap">
@@ -238,7 +246,7 @@ function Help({ title, text }) {
         }}
       >?</span>
       {open && (
-        <div className="help-popup" onClick={(e) => e.stopPropagation()}>
+        <div className={`help-popup${position === 'right' ? ' help-popup--right' : ''}`} onClick={(e) => e.stopPropagation()}>
           <button className="help-close" onClick={() => setOpen(false)} aria-label="Close">✕</button>
           <h4>{title}</h4>
           <p>{text}</p>
@@ -248,12 +256,12 @@ function Help({ title, text }) {
   );
 }
 
-function Field({ label, help, children }) {
+function Field({ label, help, helpPosition, children }) {
   return (
     <div className="field">
       <span className="field-label">
         {label}
-        {help && <Help title={help.title} text={help.text} />}
+        {help && <Help title={help.title} text={help.text} position={helpPosition} />}
       </span>
       {children}
     </div>
@@ -356,7 +364,7 @@ function MoneyCostTooltip({ active, payload, label }) {
 // Reusable report used by the "Model savings" tab: headline savings cards, the
 // monthly energy/cost charts, the monthly detail table and the final summary
 // line. Driven purely off the backend `result` ({ totals, monthly }).
-function MoneyReport({ result, periodLabel, detailRight }) {
+function MoneyReport({ result, periodLabel, detailRight, numPanels, panelW }) {
   const monthly = useMemo(() => (result?.monthly ?? []).map((m) => ({
     ...m,
     cost_without: m.cost_$,
@@ -376,6 +384,7 @@ function MoneyReport({ result, periodLabel, detailRight }) {
   }, { consumption_kwh: 0, solar_kwh: 0, self_consumed_kwh: 0, excess_kwh: 0,
        grid_kwh: 0, cost_$: 0, savings_$: 0, waste_$: 0 }), [monthly]);
   const totals = result?.totals ?? {};
+  const ratedPowerKwp = numPanels * panelW / 1000;
 
   return (
     <>
@@ -385,7 +394,7 @@ function MoneyReport({ result, periodLabel, detailRight }) {
           <span className="report-period">{periodLabel}</span>
         </div>
         <div className="report-cards">
-          <div className="rcard"><span>Installed PV</span><b>{result?.panel?.rated_power_kwp ?? ''} kWp</b></div>
+          <div className="rcard"><span>Installed PV</span><b>{numPanels} × {panelW}W = {ratedPowerKwp} kWp</b></div>
           <div className="rcard money-highlight"><span>Savings</span><b>${totals.savings_$} ({totals.savings_pct}%)</b></div>
           <div className="rcard"><span>Bill without solar</span><b>${totals.cost_without_solar_$}</b></div>
           <div className="rcard"><span>Bill with solar</span><b>${totals.cost_with_solar_$}</b></div>
@@ -503,6 +512,9 @@ export default function App() {
     tilt: 25, azimuth: 0, rated_power_kwp: 5.0, albedo: 0.2,
     transposition_model: 'perez', inverter_efficiency: 0.95,
   });
+  const [panelW, setPanelW] = useState(400);
+  const [numPanels, setNumPanels] = useState(12);
+  const ratedPowerKwp = numPanels * panelW / 1000;
   const [startDate, setStartDate] = useState('2025-08-18');
   const [days, setDays] = useState(1);
   const [showClear, setShowClear] = useState(true);
@@ -559,6 +571,11 @@ export default function App() {
   useEffect(() => {
     getLocations().then(setLocations).catch((e) => setError(e.message));
   }, []);
+
+  // Keep the panel's rated power in sync with the Panel (W) × N of panels inputs.
+  useEffect(() => {
+    setPanel((p) => ({ ...p, rated_power_kwp: numPanels * panelW / 1000 }));
+  }, [panelW, numPanels]);
 
   const set = (key) => (e) => {
     const v = e.target.value;
@@ -955,10 +972,27 @@ export default function App() {
               <Compass tilt={panel.tilt} azimuth={panel.azimuth} />
             </div>
             {activeTab !== 'modelsize' && (
-              <Field label="Rated power (kWp)" help={HELP.power}>
-                <input type="number" min="1" step="1" value={panel.rated_power_kwp}
-                  onChange={set('rated_power_kwp')} />
-              </Field>
+              <>
+                <div className="panel-row">
+                  <Field label="Panel (W)" help={HELP.panelW} helpPosition="right">
+                    <select value={panelW} onChange={(e) => setPanelW(Number(e.target.value))}>
+                      {[400, 450, 500].map((w) => (
+                        <option key={w} value={w}>{w}W</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="N of panels" help={HELP.numPanels} helpPosition="right">
+                    <select value={numPanels} onChange={(e) => setNumPanels(Number(e.target.value))}>
+                      {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+                <Field label="Rated power (kWp)" help={HELP.power}>
+                  <input type="number" min="1" step="1" value={ratedPowerKwp} readOnly />
+                </Field>
+              </>
             )}
             <Field label="Albedo" help={HELP.albedo}>
               <input type="number" min="0" max="1" step="0.05" value={panel.albedo}
@@ -1061,7 +1095,7 @@ export default function App() {
                   </span>
                 </div>
                 <div className="report-cards">
-                  <div className="rcard"><span>Installed PV</span><b>{panel.rated_power_kwp} kWp</b></div>
+                  <div className="rcard"><span>Installed PV</span><b>{numPanels} × {panelW}W = {ratedPowerKwp} kWp</b></div>
                   <div className="rcard"><span>Total</span><b>{summary.total_energy_kwh} kWh</b></div>
                   <div className="rcard"><span>No cloud</span><b>{summary.total_energy_clear_kwh} kWh</b></div>
                   <div className="rcard"><span>Peak</span><b>{summary.peak_power_kw} kW</b></div>
@@ -1183,7 +1217,7 @@ export default function App() {
                       <span className="report-period">{year}</span>
                     </div>
                     <div className="report-cards">
-                      <div className="rcard"><span>Installed PV</span><b>{panel.rated_power_kwp} kWp</b></div>
+                      <div className="rcard"><span>Installed PV</span><b>{numPanels} × {panelW}W = {ratedPowerKwp} kWp</b></div>
                       <div className="rcard"><span>Total</span><b>{Math.round(aggSummary.total_energy_kwh)} kWh</b></div>
                       <div className="rcard"><span>No cloud</span><b>{Math.round(aggSummary.total_energy_clear_kwh)} kWh</b></div>
                       <div className="rcard"><span>Peak</span><b>{aggSummary.peak_power_kw} kW</b></div>
@@ -1403,7 +1437,7 @@ export default function App() {
                       <span className="report-period">18 Aug 2025 – 17 Aug 2026 · {meta?.name ?? location} solar · Christchurch usage</span>
                     </div>
                     <div className="report-cards">
-                      <div className="rcard"><span>Installed PV</span><b>{panel.rated_power_kwp} kWp</b></div>
+                      <div className="rcard"><span>Installed PV</span><b>{numPanels} × {panelW}W = {ratedPowerKwp} kWp</b></div>
                       <div className="rcard money-highlight"><span>Savings</span><b>${moneyTotals.savings_$} ({moneyTotals.savings_pct}%)</b></div>
                       <div className="rcard"><span>Bill without solar</span><b>${moneyTotals.cost_without_solar_$}</b></div>
                       <div className="rcard"><span>Bill with solar</span><b>${moneyTotals.cost_with_solar_$}</b></div>
@@ -1551,6 +1585,7 @@ export default function App() {
                     All amounts are in NZ dollars.
                   </div>
                   <MoneyReport result={modelMoneyResult}
+                    numPanels={numPanels} panelW={panelW}
                     periodLabel={`${modelMoneyResult.region} 2025 · ${meta?.name ?? location} solar · modeled usage`}
                     detailRight={
                       <>
@@ -1590,7 +1625,7 @@ export default function App() {
                               {showDailyClear && (
                                 <Line type="monotone" dataKey="solarClearW" name="No-cloud (W)" stroke="#9ccc65" strokeDasharray="6 4" dot={false} strokeWidth={1.5} />
                               )}
-                              <Line type="monotone" dataKey="savedW" name="Solar saved (W)" stroke="#1e88e5" dot={false} strokeWidth={2} />
+                              <Line type="monotone" dataKey="savedW" name="Solar used (W)" stroke="#1e88e5" dot={false} strokeWidth={2} />
                               <Line type="monotone" dataKey="wastedW" name="Solar wasted (W)" stroke="#fbc02d" dot={false} strokeWidth={2} />
                             </LineChart>
                           </ResponsiveContainer>
@@ -1681,7 +1716,7 @@ export default function App() {
                               labelFormatter={(v) => `${v} kWp`}
                               labelStyle={{ color: '#000' }} />
                             <Legend />
-                            <Line type="monotone" dataKey="self_consumed_kwh" name="Self-consumed (kWh)"
+                            <Line type="monotone" dataKey="self_consumed_kwh" name="Solar used (kWh)"
                               stroke="#4caf50" strokeWidth={2} dot={{ r: 3 }} />
                             <Line type="monotone" dataKey="grid_import_kwh" name="Grid import (kWh)"
                               stroke="#1e88e5" strokeWidth={2} dot={{ r: 3 }} />
@@ -1700,7 +1735,7 @@ export default function App() {
                           <tr>
                             <th>Rated power (kWp)</th>
                             <th>Savings (%)</th>
-                            <th>Self-consumed (kWh)</th>
+                            <th>Solar used (kWh)</th>
                             <th>Grid import (kWh)</th>
                             <th>Solar wasted (kWh)</th>
                           </tr>
