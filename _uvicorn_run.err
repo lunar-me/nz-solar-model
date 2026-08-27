@@ -164,3 +164,25 @@ D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodAr
   local = df.index.tz_convert("Pacific/Auckland").to_period("M")
 D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
   local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
+  local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
+  local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
+  local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
+  local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
+  local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
+  local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
+  local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
+  local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
+  local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
+  local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+D:\lunar-me\nz-solar-model\api\index.py:483: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
+  local = df.index.tz_convert("Pacific/Auckland").to_period("M")
