@@ -637,7 +637,13 @@ export default function App() {
     }
   }, [location, panel, annualKwh, kwhPriceGst, dailyCharge]);
 
-  useEffect(() => { if (activeTab === 'modelmoney') runModelMoney(); }, [runModelMoney, activeTab]);
+  // Recalculate the model only after the user stops typing (debounced), not on
+  // every keystroke. The Calculate button still triggers an immediate run.
+  useEffect(() => {
+    if (activeTab !== 'modelmoney') return;
+    const t = setTimeout(() => runModelMoney(), 500);
+    return () => clearTimeout(t);
+  }, [runModelMoney, activeTab]);
 
   const runDaily = useCallback(async () => {
     if (!isValidDate(dailyDate)) {
@@ -663,9 +669,12 @@ export default function App() {
   }, [location, panel, annualKwh, kwhPriceGst, dailyDate]);
 
   // Populate the "Daily detail" chart once a model result exists, and refresh it
-  // whenever the day selector (or model inputs) change.
+  // whenever the day selector (or model inputs) change — debounced so it doesn't
+  // fire on every keystroke.
   useEffect(() => {
-    if (activeTab === 'modelmoney' && modelMoneyResult) runDaily();
+    if (activeTab !== 'modelmoney' || !modelMoneyResult) return;
+    const t = setTimeout(() => runDaily(), 500);
+    return () => clearTimeout(t);
   }, [activeTab, modelMoneyResult, runDaily]);
 
   // Daily detail data as average power in watts (kWh/hour × 1000 = W).
@@ -1004,6 +1013,7 @@ export default function App() {
                       <Tooltip
                         labelFormatter={formatLocalFull}
                         formatter={(value, name) => [Math.round(Number(value)), name]}
+                        labelStyle={{ color: '#000' }}
                       />
                       <Legend />
                       <Area type="monotone" dataKey="ac_power" name="AC power (W, real clouds)"
@@ -1427,11 +1437,11 @@ export default function App() {
               <section className="chart-block">
                 <div className="model-inputs">
                   <Field label="Annual consumption (kWh)" help={HELP.modelMoneyAnnual}>
-                    <input type="number" min="1" value={annualKwh}
+                    <input type="number" min="1" step="500" value={annualKwh}
                       onChange={(e) => setAnnualKwh(Number(e.target.value))} />
                   </Field>
                   <Field label="Price per kWh incl GST ($)" help={HELP.modelMoneyPrice}>
-                    <input type="number" min="0.01" step="0.01" value={kwhPriceGst}
+                    <input type="number" min="0.05" step="0.01" value={kwhPriceGst}
                       onChange={(e) => setKwhPriceGst(Number(e.target.value))} />
                   </Field>
                   <Field label="Daily charges ($)" help={HELP.modelMoneyDaily}>

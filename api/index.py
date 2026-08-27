@@ -21,6 +21,7 @@ import httpx
 import pandas as pd
 import numpy as np
 import statistics
+import warnings
 
 from .engine import (PanelConfig, run_simulation, summarize, aggregate_energy,
                      data_quality_report)
@@ -480,7 +481,14 @@ def _money_totals(df: pd.DataFrame) -> dict:
 
 def _money_monthly(df: pd.DataFrame) -> list[dict]:
     """Aggregate an hourly self-consumption frame into NZ-local calendar months."""
-    local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+    with warnings.catch_warnings():
+        # tz-aware DatetimeIndex -> Period drops tz by design; we already
+        # converted to NZ local time, so silence pandas' informational warning.
+        warnings.filterwarnings(
+            "ignore",
+            message="Converting to PeriodArray/Index representation will drop timezone information",
+        )
+        local = df.index.tz_convert("Pacific/Auckland").to_period("M")
     g = df.groupby(local).agg({
         "consumption_kwh": "sum", "solar_kwh": "sum",
         "self_consumed_kwh": "sum", "excess_kwh": "sum", "grid_kwh": "sum",
