@@ -16,7 +16,8 @@ astronomy.
 - **Year** — monthly/weekly PV output for a calendar year.
 - **Stability** — year-over-year PV output.
 - **My money** — solar self-consumption & savings against Christchurch's real hourly electricity bill (locked to Christchurch).
-- **Model money** — solar savings against *modelled* hourly consumption: your annual kWh spread over a region's real 2025 generation curve (`region_electricity_generation_2025_1h`), priced at a flat per-kWh rate plus a fixed daily charge. Auckland uses the Waikato region; Christchurch uses Canterbury.
+- **Model savings** — solar savings against *modelled* hourly consumption: your annual kWh spread over a region's real 2025 generation curve (`region_electricity_generation_2025_1h`), priced at a flat per-kWh rate plus a fixed daily charge. Auckland uses the Waikato region; Christchurch uses Canterbury.
+- **Model size** — sweeps the panel's rated power from 1 to 15 kWp and plots the modelled % savings, self-consumed solar (kWh) and grid import (kWh) at each size, with a values table below the two charts. Uses the same inputs as the Model savings tab (annual usage, price per kWh, daily charges); the rated power field is hidden because it is the swept variable.
 - **Curves** — daily generation (MWh) of every region on each island, with per-region toggles, a log-scale option, and a daily-totals table.
 - **Data quality** — CAMS radiation dataset quality report.
 
@@ -161,7 +162,7 @@ Notes:
 | `POST /api/simulate` | run the PV model; body `{location, start, end, panel}` |
 | `POST /api/money` | solar self-consumption & savings over Christchurch's electricity year |
 | `POST /api/model-money` | solar savings against modelled hourly consumption (region 2025 curve) |
-| `POST /api/model-money/daily` | hourly detail for one day of the Model-money model |
+| `POST /api/model-money/daily` | hourly detail for one day of the Model-savings model |
 | `POST /api/curves/daily` | daily generation (MWh) of every region on both islands |
 | `GET /api/data-quality` | CAMS radiation data-quality report |
 

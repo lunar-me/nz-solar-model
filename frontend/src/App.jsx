@@ -189,6 +189,14 @@ const HELP = {
     title: 'Daily detail',
     text: 'Hourly curves for a single 2025 day: modelled solar generation (green) with its no-cloud reference (dashed), electricity consumption (red), the solar actually used on-site and thus "saved" (blue), and the solar that couldn\'t be used and was "wasted" (amber). Pick any 2025 day with the selector.',
   },
+  modelSizeChart: {
+    title: 'Savings vs rated power',
+    text: 'Sweeps the panel\'s rated power from 1 to 15 kWp and plots the modelled % savings of your annual bill at each size, using the same inputs as the Model savings tab (annual usage, price per kWh, daily charges). The rated power field is hidden here because it is the swept variable.',
+  },
+  modelSizeSelfChart: {
+    title: 'Self-consumed vs rated power',
+    text: 'Sweeps the panel\'s rated power from 1 to 15 kWp and plots the modelled self-consumed solar (kWh used on-site) and grid import (kWh still drawn from the grid) at each size, using the same inputs as the Model savings tab.',
+  },
   curves: {
     title: 'Curves',
     text: 'Two daily charts — one per island — showing the actual hourly electricity generation (in MWh) of every region on that island, from the region_electricity_generation_2025_1h table. Pick any 2025 day with the selector or the ‹ › buttons.',
@@ -527,6 +535,10 @@ export default function App() {
   const [modelMoneyLoading, setModelMoneyLoading] = useState(false);
   const [modelMoneyError, setModelMoneyError] = useState(null);
 
+  const [modelSizeResult, setModelSizeResult] = useState(null);
+  const [modelSizeLoading, setModelSizeLoading] = useState(false);
+  const [modelSizeError, setModelSizeError] = useState(null);
+
   const [dailyDate, setDailyDate] = useState('2025-08-18');
   const [dailyResult, setDailyResult] = useState(null);
   const [dailyLoading, setDailyLoading] = useState(false);
@@ -644,6 +656,43 @@ export default function App() {
     const t = setTimeout(() => runModelMoney(), 500);
     return () => clearTimeout(t);
   }, [runModelMoney, activeTab]);
+
+  // Sweep the rated power 1–15 kWp and record the modelled % savings, self-consumed
+  // and grid-import kWh at each size.
+  const runModelSize = useCallback(async () => {
+    setModelSizeLoading(true);
+    setModelSizeError(null);
+    try {
+      const points = [];
+      for (let kwp = 1; kwp <= 15; kwp++) {
+        const data = await modelMoney({
+          location, panel: { ...panel, rated_power_kwp: kwp },
+          annual_kwh: annualKwh,
+          kwh_price_gst: kwhPriceGst,
+          daily_charge: dailyCharge,
+        });
+        const t = data?.totals ?? {};
+        points.push({
+          kwp,
+          savings_pct: t.savings_pct ?? 0,
+          self_consumed_kwh: t.self_consumed_kwh ?? 0,
+          grid_import_kwh: t.grid_import_kwh ?? 0,
+        });
+      }
+      setModelSizeResult(points);
+    } catch (e) {
+      setModelSizeError(e.message);
+    } finally {
+      setModelSizeLoading(false);
+    }
+  }, [location, panel, annualKwh, kwhPriceGst, dailyCharge]);
+
+  // Re-run the sweep only after the user stops typing (debounced).
+  useEffect(() => {
+    if (activeTab !== 'modelsize') return;
+    const t = setTimeout(() => runModelSize(), 500);
+    return () => clearTimeout(t);
+  }, [runModelSize, activeTab]);
 
   const runDaily = useCallback(async () => {
     if (!isValidDate(dailyDate)) {
@@ -788,6 +837,7 @@ export default function App() {
     : activeTab === 'stability' ? stabLoading
     : activeTab === 'dataq' ? dqLoading
     : activeTab === 'modelmoney' ? modelMoneyLoading
+    : activeTab === 'modelsize' ? modelSizeLoading
     : moneyLoading;
   const moneyMonthly = useMemo(() => (moneyResult?.monthly ?? []).map((m) => ({
     ...m,
@@ -841,6 +891,7 @@ export default function App() {
         <button className={activeTab === 'year' ? 'tab active' : 'tab'} onClick={() => switchTab('year')}>Year</button>
         <button className={activeTab === 'money' ? 'tab active' : 'tab'} onClick={() => switchTab('money')}>$ My money</button>
         <button className={activeTab === 'modelmoney' ? 'tab active' : 'tab'} onClick={() => switchTab('modelmoney')}>Model savings</button>
+        <button className={activeTab === 'modelsize' ? 'tab active' : 'tab'} onClick={() => switchTab('modelsize')}>Model size</button>
         <button className={activeTab === 'curves' ? 'tab active' : 'tab'} onClick={() => switchTab('curves')}>Curves</button>
         <button className={activeTab === 'dataq' ? 'tab active' : 'tab'} onClick={() => switchTab('dataq')}>Data quality</button>
       </div>
@@ -885,10 +936,12 @@ export default function App() {
             <div className="compass-wrap">
               <Compass tilt={panel.tilt} azimuth={panel.azimuth} />
             </div>
-            <Field label="Rated power (kWp)" help={HELP.power}>
-              <input type="number" min="1" step="1" value={panel.rated_power_kwp}
-                onChange={set('rated_power_kwp')} />
-            </Field>
+            {activeTab !== 'modelsize' && (
+              <Field label="Rated power (kWp)" help={HELP.power}>
+                <input type="number" min="1" step="1" value={panel.rated_power_kwp}
+                  onChange={set('rated_power_kwp')} />
+              </Field>
+            )}
             <Field label="Albedo" help={HELP.albedo}>
               <input type="number" min="0" max="1" step="0.05" value={panel.albedo}
                 onChange={set('albedo')} />
@@ -948,12 +1001,14 @@ export default function App() {
               : activeTab === 'stability' ? runStability()
               : activeTab === 'dataq' ? runDataQuality()
               : activeTab === 'modelmoney' ? runModelMoney()
+              : activeTab === 'modelsize' ? runModelSize()
               : runMoney())}
             disabled={activeTab === 'daily' ? loading
               : activeTab === 'year' ? aggLoading
               : activeTab === 'stability' ? stabLoading
               : activeTab === 'dataq' ? dqLoading
               : activeTab === 'modelmoney' ? modelMoneyLoading
+              : activeTab === 'modelsize' ? modelSizeLoading
               : moneyLoading}
             className="run"
           >
@@ -962,8 +1017,9 @@ export default function App() {
               : activeTab === 'stability' ? stabLoading
               : activeTab === 'dataq' ? dqLoading
               : activeTab === 'modelmoney' ? modelMoneyLoading
+              : activeTab === 'modelsize' ? modelSizeLoading
               : moneyLoading) ? 'Running\u2026'
-              : activeTab === 'modelmoney' ? 'Calculate' : 'Run'}
+              : activeTab === 'modelmoney' || activeTab === 'modelsize' ? 'Calculate' : 'Run'}
           </button>
         </aside>
 
@@ -1448,9 +1504,6 @@ export default function App() {
                     <input type="number" min="0" step="0.01" value={dailyCharge}
                       onChange={(e) => setDailyCharge(Number(e.target.value))} />
                   </Field>
-                  <button className="model-calc" onClick={runModelMoney} disabled={modelMoneyLoading}>
-                    {modelMoneyLoading ? 'Calculating…' : 'Calculate'}
-                  </button>
                 </div>
               </section>
               {modelMoneyError && <div className="error">{modelMoneyError}</div>}
@@ -1526,6 +1579,113 @@ export default function App() {
                         </p>
                       </>
                     } />
+                </>
+              )}
+            </>
+          )}
+
+          {activeTab === 'modelsize' && (
+            <>
+              <section className="chart-block">
+                <div className="model-inputs">
+                  <Field label="Annual consumption (kWh)" help={HELP.modelMoneyAnnual}>
+                    <input type="number" min="1" step="500" value={annualKwh}
+                      onChange={(e) => setAnnualKwh(Number(e.target.value))} />
+                  </Field>
+                  <Field label="Price per kWh incl GST ($)" help={HELP.modelMoneyPrice}>
+                    <input type="number" min="0.05" step="0.01" value={kwhPriceGst}
+                      onChange={(e) => setKwhPriceGst(Number(e.target.value))} />
+                  </Field>
+                  <Field label="Daily charges ($)" help={HELP.modelMoneyDaily}>
+                    <input type="number" min="0" step="0.01" value={dailyCharge}
+                      onChange={(e) => setDailyCharge(Number(e.target.value))} />
+                  </Field>
+                </div>
+              </section>
+              {modelSizeError && <div className="error">{modelSizeError}</div>}
+              {!modelSizeResult && !modelSizeError && (
+                <p className="hint">Loading... please wait</p>
+              )}
+              {modelSizeResult && (
+                <>
+                  <div className="explain">
+                    This tab sweeps the panel's rated power from <b>1 to 15 kWp</b> and plots the
+                    modelled <b>% savings</b> of your annual bill at each size, using the same inputs
+                    as the Model savings tab (annual usage, price per kWh, daily charges). The rated
+                    power field is hidden here because it is the swept variable.
+                  </div>
+                  <div className="curves-row">
+                    <section className="chart-block curves-col">
+                      <ChartHead title="Savings vs rated power (kWp)" help={HELP.modelSizeChart} />
+                      <div className="chart">
+                        <ResponsiveContainer width="100%" height={360}>
+                          <LineChart data={modelSizeResult}
+                            margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="kwp" type="number" domain={[1, 15]} tickCount={15}
+                              label={{ value: 'Rated power (kWp)', position: 'insideBottom', offset: -2 }} />
+                            <YAxis tickFormatter={(v) => `${v}%`}
+                              label={{ value: '% Savings', angle: -90, position: 'insideLeft' }} />
+                            <Tooltip
+                              formatter={(v) => [`${Number(v).toFixed(1)}%`, 'Savings']}
+                              labelFormatter={(v) => `${v} kWp`}
+                              labelStyle={{ color: '#000' }} />
+                            <Line type="monotone" dataKey="savings_pct" name="Savings (%)"
+                              stroke="#1e88e5" strokeWidth={2} dot={{ r: 3 }} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </section>
+                    <section className="chart-block curves-col">
+                      <ChartHead title="Self-consumed vs rated power (kWp)" help={HELP.modelSizeSelfChart} />
+                      <div className="chart">
+                        <ResponsiveContainer width="100%" height={360}>
+                          <LineChart data={modelSizeResult}
+                            margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="kwp" type="number" domain={[1, 15]} tickCount={15}
+                              label={{ value: 'Rated power (kWp)', position: 'insideBottom', offset: -2 }} />
+                            <YAxis tickFormatter={(v) => Math.round(v)}
+                              label={{ value: 'kWh', angle: -90, position: 'insideLeft' }} />
+                            <Tooltip
+                              formatter={(v, name) => [`${Math.round(Number(v))} kWh`, name]}
+                              labelFormatter={(v) => `${v} kWp`}
+                              labelStyle={{ color: '#000' }} />
+                            <Legend />
+                            <Line type="monotone" dataKey="self_consumed_kwh" name="Self-consumed (kWh)"
+                              stroke="#4caf50" strokeWidth={2} dot={{ r: 3 }} />
+                            <Line type="monotone" dataKey="grid_import_kwh" name="Grid import (kWh)"
+                              stroke="#1e88e5" strokeWidth={2} dot={{ r: 3 }} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </section>
+                  </div>
+                  <section className="chart-block">
+                    <div className="chart-head"><h2>Values by rated power</h2></div>
+                    <div className="agg-table-wrap">
+                      <table className="agg-table money-table">
+                        <thead>
+                          <tr>
+                            <th>Rated power (kWp)</th>
+                            <th>Savings (%)</th>
+                            <th>Self-consumed (kWh)</th>
+                            <th>Grid import (kWh)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {modelSizeResult.map((p) => (
+                            <tr key={p.kwp}>
+                              <td>{p.kwp}</td>
+                              <td>{p.savings_pct.toFixed(1)}%</td>
+                              <td>{Math.round(p.self_consumed_kwh)}</td>
+                              <td>{Math.round(p.grid_import_kwh)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
                 </>
               )}
             </>
