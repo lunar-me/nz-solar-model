@@ -101,6 +101,13 @@ pip install -r requirements.txt
 uvicorn api.index:app --reload --port 8000
 ```
 
+To capture uvicorn's logs with timestamps (access → `_uvicorn_run.log`, server/errors → `_uvicorn_run.err`):
+
+```bash
+uvicorn api.index:app --reload --port 8000 --log-config uvicorn_log_config.json \
+  > _uvicorn_run.log 2> _uvicorn_run.err
+```
+
 Open http://localhost:8000/docs for the interactive API.
 
 ### Frontend (React, dev)

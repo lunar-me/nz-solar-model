@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+import warnings
 from pvlib import irradiance, solarposition
 
 TRANSPOSITION_MODELS = ("perez", "haydavies", "isotropic")
@@ -208,7 +209,14 @@ def aggregate_energy(result: pd.DataFrame, period: str) -> list[dict]:
     ci = result["cloud_index"].to_numpy()
 
     if period == "month":
-        per = local.to_period("M")
+        with warnings.catch_warnings():
+            # tz-aware DatetimeIndex -> Period drops tz by design; we already
+            # converted to NZ local time, so silence pandas' informational warning.
+            warnings.filterwarnings(
+                "ignore",
+                message="Converting to PeriodArray/Index representation will drop timezone information",
+            )
+            per = local.to_period("M")
         sr = pd.Series(real, index=per).groupby(level=0).sum()
         sc = pd.Series(clear, index=per).groupby(level=0).sum()
         sm_ci = pd.Series(ci, index=per).groupby(level=0).mean()

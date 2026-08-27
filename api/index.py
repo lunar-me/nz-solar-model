@@ -650,7 +650,14 @@ def money(req: MoneyRequest) -> dict:
     }
 
     # Monthly aggregation (NZ-local months).
-    local = df.index.tz_convert("Pacific/Auckland").to_period("M")
+    with warnings.catch_warnings():
+        # tz-aware DatetimeIndex -> Period drops tz by design; we already
+        # converted to NZ local time, so silence pandas' informational warning.
+        warnings.filterwarnings(
+            "ignore",
+            message="Converting to PeriodArray/Index representation will drop timezone information",
+        )
+        local = df.index.tz_convert("Pacific/Auckland").to_period("M")
     g = df.groupby(local).agg({
         "consumption_kwh": "sum", "solar_kwh": "sum",
         "self_consumed_kwh": "sum", "excess_kwh": "sum", "grid_kwh": "sum",
